@@ -8,7 +8,6 @@
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
-// #include <arpa/inet.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -63,9 +62,9 @@ typedef struct eps_sub {
 
 struct eps {
   // params
+  uint8_t sub_group[EPS_GROUPS];
   uint8_t mc_group[EPS_GROUPS][4]; // big-endian
   uint8_t mc_port[2]; // big endian
-  uint16_t groups;
   int loopback;
   int ttl;  
 
@@ -111,8 +110,9 @@ int eps_add_timer(uint16_t ivl_ms) {
   int fd = timerfd_create(CLOCK_MONOTONIC, 0);
   if (fd != -1) {
     struct itimerspec ts = {0};
-    ts.it_value.tv_sec  = ivl_ms / 1000;
-    ts.it_value.tv_nsec = (ivl_ms % 1000) * (1000*1000*1000);
+    ts.it_interval.tv_sec  = ivl_ms / 1000;
+    ts.it_interval.tv_nsec = (ivl_ms % 1000) * (1000*1000*1000);
+    ts.it_value.tv_nsec = 1000;
     timerfd_settime(fd, 0, &ts, NULL);
     if (eps_add_fd(fd) != 0) {
       close(fd);
@@ -147,9 +147,14 @@ int eps_init() {
 
   int opt = 1;
   setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  // setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+
   opt = eps.ttl == 0? 1 : eps.loopback; // force loopback if ttl=0
   setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_LOOP, &opt, sizeof(opt));
   setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &eps.ttl, sizeof(eps.ttl));
+
+  uint8_t localhost[4] = {127,0,0,1};
+  // setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_IF, &localhost, sizeof(localhost));
 
   memset(&eps.mc_dst, 0, sizeof(eps.mc_dst));
   eps.mc_dst.sin_family = AF_INET;
@@ -165,7 +170,7 @@ int eps_init() {
   uint8_t group[4];
   memcpy(group, eps.mc_group[0], sizeof(group));
   for (uint8_t i = 0; i < EPS_GROUPS; i++) {
-    if (!(eps.groups & (1 << i))) continue;
+    if (!eps.sub_group[i]) continue;
     if (i != 0) {
       memcpy(eps.mc_group[i], eps.mc_group[0], 4);
       eps.mc_group[i][3] = eps.mc_group[0][3]+i;
@@ -251,6 +256,9 @@ eps_sub *eps_next_msg() {
         }
       }
     }
+    if (eps.mmsg_i == eps.mmsg_n) {
+      eps.mmsg_n = 0;
+    }
   }
 
   return out;
@@ -266,24 +274,3 @@ eps_event* eps_next_event() {
 }
 
 #endif//EPS_H
-
-/*
-  eps_init
-  eps_sub()
-  int timer = eps_add_timer()
-
-  for (;;) {
-    int n = eps_poll();
-    for (eps_sub *msg; msg = eps_next_msg();) {
-      // handle subscriptions
-    }
-    for (epoll_event* ev; ev = eps_next_event(); ) {
-
-    }
-
-    if (eps.errno) {
-      // handle errors
-    }
-  }
-*/
-
