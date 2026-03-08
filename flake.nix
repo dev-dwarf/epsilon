@@ -17,6 +17,11 @@
         name = "test";
         src = ./.;
       };
+
+      api_test = pkgs.mkSTU rec {
+        name = "api_test";
+        src = ./.;
+      };
     };
   };
 }
