@@ -2,8 +2,6 @@
 #define EPS_H
 #include <stdint.h>
 #include <string.h> // memcpy, memset
-
-#define __USE_GNU // to get recvmmsg from sys/socket.h
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
@@ -21,11 +19,8 @@
 #ifndef EPS_MAX_SUBS 
 #define EPS_MAX_SUBS 128
 #endif
-#ifndef EPS_MMSGS // how many buffers to pass to recvmmsg
-#define EPS_MMSGS 8
-#endif
-#ifndef eps_sub_SIZE // size of buffers passed to recvmmsg
-#define eps_sub_SIZE 1472
+#ifndef EPS_MSG_SIZE // size of buffers passed to recv
+#define EPS_MSG_SIZE 1472
 #endif
 
 // can be overriden with your own message groups
@@ -69,26 +64,16 @@ struct eps {
   int ttl;  
 
   int mc_sock;
-
   struct sockaddr_in mc_dst;
-
   int subn;
   eps_sub subs[EPS_MAX_SUBS];
-
-  struct mmsghdr mmsg_hdrs[EPS_MMSGS];
-  struct iovec mmsg_vecs[EPS_MMSGS];
-  uint8_t mmsg_bufs[EPS_MMSGS][eps_sub_SIZE];
-  int mmsg_n;
-  int mmsg_i;
-  eps_sub mmsg_out;
-
+  uint8_t msg_buf[EPS_MSG_SIZE];
+  eps_sub msg_out;
   int epoll;
   int eventn;
   int eventi;
   eps_event events[8];
-
   int errn; // copy of errno that can be read after eps_poll or eps_next_msg
-
   const char *err;
 };
 struct eps eps;
@@ -153,9 +138,6 @@ int eps_init() {
   setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_LOOP, &opt, sizeof(opt));
   setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &eps.ttl, sizeof(eps.ttl));
 
-  uint8_t localhost[4] = {127,0,0,1};
-  // setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_IF, &localhost, sizeof(localhost));
-
   memset(&eps.mc_dst, 0, sizeof(eps.mc_dst));
   eps.mc_dst.sin_family = AF_INET;
   eps.mc_dst.sin_addr.s_addr = INADDR_ANY;
@@ -186,15 +168,6 @@ int eps_init() {
 
   if ((eps.epoll = epoll_create1(0)) < 0) { return 1; /* TODO err; */ }
   if (eps_add_fd(eps.mc_sock) < 0) { return 1; /* TODO err */ }
-
-  for (int i = 0; i < EPS_MMSGS; i++) {
-    eps.mmsg_vecs[i].iov_base = eps.mmsg_bufs[i];
-    eps.mmsg_vecs[i].iov_len  = sizeof(eps.mmsg_bufs[i]);
-
-    // not reading msg addr or control, so just setting iov
-    eps.mmsg_hdrs[i].msg_hdr.msg_iov    = &eps.mmsg_vecs[i];
-    eps.mmsg_hdrs[i].msg_hdr.msg_iovlen = 1;
-  }
 }
 
 int eps_poll() {
@@ -213,51 +186,35 @@ int eps_poll() {
 eps_sub *eps_next_msg() {
   eps_sub *out = 0;
 
-  if (eps.mmsg_n == 0) {
-    eps.mmsg_i = 0;
-    eps.mmsg_n = recvmmsg(eps.mc_sock, eps.mmsg_hdrs, EPS_MMSGS, MSG_DONTWAIT, NULL);
-    if (eps.mmsg_n < 0) {
-      eps.mmsg_n = 0;
-      eps.errn = errno;
-    } else {
-      eps.errn = 0;
-    }
-  }
+  int len = recv(eps.mc_sock, eps.msg_buf, sizeof(eps.msg_buf), 0);
+  if (len < 0) {
+    eps.errn = errno;
+  } else if (len >= sizeof(eps_id)) {
+    uint8_t *d = eps.msg_buf;
+    eps_id id; memcpy(&id, d, sizeof(id));
 
-  if (eps.mmsg_n > 0) {
-    while (eps.mmsg_i < eps.mmsg_n) {
-      int len = eps.mmsg_hdrs[eps.mmsg_i].msg_len;
-      uint8_t *d = eps.mmsg_bufs[eps.mmsg_i++];
-      eps_id id; 
-      if (len < sizeof(id)) { continue; }
-      memcpy(&id, d, sizeof(id));
-
-      for (int i = 0; i < eps.subn; i++) {
-        eps_sub sub = eps.subs[i];
-        eps_id sd = sub.id;
-        bool match = 1;
-        match &= (sd.agent == 0) || (sd.agent == id.agent);
-        match &= (sd.msg   == 0) || (sd.msg   == id.msg  );
-        match &= (sd.inst  == 0) || (sd.inst  == id.inst );
-        if (match) {
-          out = &eps.mmsg_out;
-          eps.mmsg_out.id = id;
-          eps.mmsg_out.recv_ns = eps_ns();
-          
-          if (sub.data) {
-            memcpy(sub.data, d, sub.size);
-            eps.mmsg_out.data = sub.data;
-            eps.mmsg_out.size = sub.size;
-          } else {
-            eps.mmsg_out.data = d;
-            eps.mmsg_out.size = len;
-          }
-          break;
+    for (int i = 0; i < eps.subn; i++) {
+      eps_sub sub = eps.subs[i];
+      eps_id sd = sub.id;
+      bool match = 1;
+      match &= (sd.agent == 0) || (sd.agent == id.agent);
+      match &= (sd.msg   == 0) || (sd.msg   == id.msg  );
+      match &= (sd.inst  == 0) || (sd.inst  == id.inst );
+      if (match) {
+        out = &eps.msg_out;
+        eps.msg_out.id = id;
+        eps.msg_out.recv_ns = eps_ns();
+        
+        if (sub.data) {
+          memcpy(sub.data, d, sub.size);
+          eps.msg_out.data = sub.data;
+          eps.msg_out.size = sub.size;
+        } else {
+          eps.msg_out.data = d;
+          eps.msg_out.size = len;
         }
+        break;
       }
-    }
-    if (eps.mmsg_i == eps.mmsg_n) {
-      eps.mmsg_n = 0;
     }
   }
 

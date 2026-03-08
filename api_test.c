@@ -62,7 +62,7 @@ int main(int argc, char *argv[]) {
             n = sizeof(pub_ids[i]);
 
             memcpy(&eps.mc_dst.sin_addr, eps.mc_group[EPS_SIG], sizeof(eps.mc_group[EPS_SIG]));
-            sendto(eps.mc_sock, buf, n, 0, &eps.mc_dst, sizeof(eps.mc_dst));
+            sendto(eps.mc_sock, buf, n, 0, (struct sockaddr*) &eps.mc_dst, sizeof(eps.mc_dst));
             printf("sent %.*s %04d\n", 6, buf, pub_ids[i].seq);
 
             pub_ids[i].seq++;
