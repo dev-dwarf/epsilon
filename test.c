@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include <poll.h>
 
-#define PORT 12345
+#define PORT 50500
 
 int main(int argc, char *argv[]) {
     int sock = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
@@ -23,7 +23,7 @@ int main(int argc, char *argv[]) {
     };
 
     {
-        int loop = 0;
+        int loop = 1;
         setsockopt(sock, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
     }
 
@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) {
 
     struct pollfd pfd = { .fd = sock, .events = POLLIN };
     for (;;) {
-        int r = poll(&pfd, 1, 100);
+        int r = poll(&pfd, 1, 1000);
         if (r < 0) { printf("ERROR!"); break; }
         if (pfd.revents & POLLIN) {
             char buf[2048];
