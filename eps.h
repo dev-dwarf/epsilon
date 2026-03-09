@@ -111,7 +111,7 @@ int eps_add_timer(uint16_t ivl_ms) {
   EPS_ERRNO_HARD(fd != -1, "failed to create timer");
   struct itimerspec ts = {0};
   ts.it_interval.tv_sec  = ivl_ms / 1000;
-  ts.it_interval.tv_nsec = (ivl_ms % 1000) * ((int64_t)1e9);
+  ts.it_interval.tv_nsec = (ivl_ms % 1000) * ((int64_t)1e6);
   ts.it_value.tv_nsec = 1000;   
   EPS_ERRNO_HARD(timerfd_settime(fd, 0, &ts, NULL) != -1, "timerfd_settime");
   eps_add_fd(fd);
