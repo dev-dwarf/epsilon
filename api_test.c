@@ -1,13 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define EPS_IMPL
 #include "eps.h"
 
 int main(int argc, char *argv[]) {
-  eps.sub_group[EPS_SIG] = 1;
-  eps.ttl = 0;
-  eps.loopback = 1;
-  eps_init();
+  eps_init((eps_params){
+    .sub_group[EPS_SIG] = 1,
+    .ttl = 0,
+    .loopback = 1,
+  });
 
   eps_msg pub_msg[8] = {};
   int pub_fds[8] = {};

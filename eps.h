@@ -71,13 +71,17 @@ typedef struct eps_msg {
   uint8_t *data;
   uint16_t size;
 } eps_msg;
-struct eps {
+
+typedef struct eps_params {
   bool sub_group[EPS_GROUPS];
   uint8_t mc_group[EPS_GROUPS][4];
   uint8_t mc_port[2];
   int loopback;
   int ttl;  
+} eps_params;
 
+struct eps {
+  eps_params params;
   int mc_sock;
   struct sockaddr_in mc_dst[EPS_GROUPS];
   int subn;
@@ -91,6 +95,21 @@ struct eps {
 
   char err[128];
 };
+extern struct eps eps;
+
+void eps_init(eps_params params);
+void eps_add_sub(eps_msg sub);
+void eps_add_fd(int fd);
+int eps_add_timer(uint16_t ivl_ms);
+uint64_t eps_ev_timer(eps_event *ev, int fd);
+int64_t eps_ns();
+int eps_poll();
+eps_msg *eps_next_msg();
+eps_event* eps_next_event();
+void eps_send_ex(int *groups, int groupn, eps_msg *msg);
+void eps_send(int group, eps_msg *msg);
+
+#ifdef  EPS_IMPL
 struct eps eps;
 
 void eps_add_sub(eps_msg sub) {
@@ -134,32 +153,34 @@ int64_t eps_ns() {
     return ((int64_t)ts.tv_sec * ((int64_t)1e9)) + ts.tv_nsec;
 }
 
-int eps_init() {
-  if (!eps.mc_port[0]) {
+void eps_init(eps_params params) {
+  if (!params.mc_port[0]) {
     uint8_t port[2] = EPS_PORT;
-    memcpy(eps.mc_port, port, sizeof(port));
+    memcpy(params.mc_port, port, sizeof(port));
   }
-  if (!eps.mc_group[0][0]) {
+  if (!params.mc_group[0][0]) {
     uint8_t group[4] = EPS_GROUP_BASE;
-    memcpy(eps.mc_group[0], group, sizeof(group));
+    memcpy(params.mc_group[0], group, sizeof(group));
   }
 
-  EPS_ERR_HARD(((int)eps.mc_group[0][3]) + EPS_GROUPS <= 0xFF, 
+  EPS_ERR_HARD(((int)params.mc_group[0][3]) + EPS_GROUPS <= 0xFF, 
     "mc_group[0][3] + EPS_GROUPS must not overflow");
   EPS_ERRNO_HARD((eps.mc_sock = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0)) != -1, 
     "failed to create multicast socket");
 
+  eps.params = params;
+
   int opt = 1;
   EPS_ERRNO_HARD(setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != -1, "failed SO_REUSEADDR");
-  opt = eps.ttl == 0? 1 : eps.loopback; // force loopback if ttl=0 so that stuff happens
+  opt = params.ttl == 0? 1 : params.loopback; // force loopback if ttl=0 so that stuff happens
   EPS_ERRNO_HARD(setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_LOOP, &opt, sizeof(opt)) != -1, "failed IP_MULTICAST_LOOP");
-  EPS_ERRNO_HARD(setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &eps.ttl, sizeof(eps.ttl)) != -1, "failed IP_MULTICAST_TTL");
+  EPS_ERRNO_HARD(setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &params.ttl, sizeof(params.ttl)) != -1, "failed IP_MULTICAST_TTL");
   {
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = INADDR_ANY;
-    memcpy(&dst.sin_port, eps.mc_port, sizeof(eps.mc_port));
+    memcpy(&dst.sin_port, params.mc_port, sizeof(params.mc_port));
     EPS_ERRNO_HARD(bind(eps.mc_sock, (struct sockaddr*) &dst, sizeof(dst)) != -1, 
       "failed to bind multicast socket");
   }
@@ -168,24 +189,24 @@ int eps_init() {
   memset(&mreq, 0, sizeof(mreq)); 
   mreq.imr_interface.s_addr = INADDR_ANY;
   uint8_t group[4];
-  memcpy(group, eps.mc_group[0], sizeof(group));
+  memcpy(group, params.mc_group[0], sizeof(group));
   for (uint8_t i = 0; i < EPS_GROUPS; i++) {
-    if (!eps.sub_group[i]) continue;
+    if (!params.sub_group[i]) continue;
     if (i != 0) {
-      memcpy(eps.mc_group[i], eps.mc_group[0], 4);
-      eps.mc_group[i][3] = eps.mc_group[0][3]+i;
+      memcpy(params.mc_group[i], params.mc_group[0], 4);
+      params.mc_group[i][3] = params.mc_group[0][3]+i;
     }
-    memcpy(&mreq.imr_multiaddr, eps.mc_group[i], 4);
+    memcpy(&mreq.imr_multiaddr, params.mc_group[i], 4);
 
     EPS_ERRNO_HARD(
       setsockopt(eps.mc_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) != -1, 
       "failed to join %u.%u.%u.%u",
-      eps.mc_group[i][0], eps.mc_group[i][1], eps.mc_group[i][2], eps.mc_group[i][3]
+      params.mc_group[i][0], params.mc_group[i][1], params.mc_group[i][2], params.mc_group[i][3]
     );
 
     eps.mc_dst[i].sin_family = AF_INET;
-    memcpy(&eps.mc_dst[i].sin_port, eps.mc_port, sizeof(eps.mc_port));
-    memcpy(&eps.mc_dst[i].sin_addr, eps.mc_group[i], sizeof(eps.mc_group[i]));
+    memcpy(&eps.mc_dst[i].sin_port, params.mc_port, sizeof(params.mc_port));
+    memcpy(&eps.mc_dst[i].sin_addr, params.mc_group[i], sizeof(params.mc_group[i]));
   }
 
   EPS_ERRNO_HARD((eps.epoll = epoll_create1(0)) != -1, "");
@@ -263,5 +284,5 @@ void eps_send_ex(int *groups, int groupn, eps_msg *msg) {
 void eps_send(int group, eps_msg *msg) {
   eps_send_ex(&group, 1, msg);
 }
-
+#endif//EPS_IMPL
 #endif//EPS_H
