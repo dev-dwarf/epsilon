@@ -40,6 +40,7 @@ int main(int argc, char *argv[]) {
    printf("subscribing to all\n");
   }
 
+  eps_msg last;
   for (;;) {
     int n = eps_poll();
 
@@ -47,26 +48,27 @@ int main(int argc, char *argv[]) {
       char sub[7] = {0};
       memcpy((uint8_t*)sub, (uint8_t*) &msg->id, 6);
       printf("got %s %04d\n", sub, msg->id.seq);
+      msg->recv_ns = 0;
+      if (memcmp(&last, msg, sizeof(last)) == 0) {
+        int x;
+      }
     }
 
     for (eps_event* ev; ev = eps_next_event(); ) {
       for (int i = 0; i < pub_n; i++) {
-        if (ev->data.fd == pub_fds[i]) {
-          uint64_t exp;
-          ssize_t s = read(pub_fds[i], &exp, sizeof(exp));
-          if (s == sizeof(exp)) {
-            char buf[128] = {0};
-            pub_msg[i].data = buf;
-            pub_msg[i].size = sizeof(eps_id);
-            eps_send(EPS_SIG, &pub_msg[i]);
-            printf("sent %.*s %04d\n", 6, buf, pub_msg[i].id.seq-1);
-          }
+        if (eps_ev_timer(ev, pub_fds[i])) {
+          char buf[128] = {0};
+          pub_msg[i].data = buf;
+          pub_msg[i].size = sizeof(eps_id);
+          eps_send(EPS_SIG, &pub_msg[i]);
+          printf("sent %.*s %04d\n", 6, buf, pub_msg[i].id.seq-1);
         }
       }
     }
 
-    if (eps.errn) {
+    if (eps.err[0]) {
       // handle errors
+      EPS_BREAK;
     }
   }
 }

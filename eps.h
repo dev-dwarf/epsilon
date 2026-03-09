@@ -22,6 +22,29 @@
 #define EPS_MSG_SIZE 1472
 #endif
 
+#ifndef EPS_BREAK
+#if __GNUC__
+#define EPS_BREAK do { __builtin_trap(); } while (0);
+#else
+#define EPS_BREAK do { *(volatile int *)0 = 0; } while (0);
+#endif
+#endif
+
+#ifndef EPS_ERR
+#include <stdio.h> // snprintf
+#define EPS_ERR_SOFT(msg, ...) do { if (eps.err[0] == 0) {\
+  snprintf(eps.err, sizeof(eps.err), "eps.h:%d: " msg "\n", __LINE__, ##__VA_ARGS__);\
+}} while(0);
+#define EPS_ERR_HARD(cond, msg, ...) do { if (!(cond)) {\
+  EPS_ERR_SOFT(msg, ##__VA_ARGS__);\
+  EPS_BREAK;\
+}} while(0);
+#define EPS_ERRNO_HARD(cond, msg, ...) EPS_ERR_HARD(cond, "" msg ": %s", ##__VA_ARGS__, strerror(errno));
+#define EPS_ERRNO_SOFT(cond, msg, ...) do { if (!(cond)) {\
+  EPS_ERR_SOFT("" msg ": %s", ##__VA_ARGS__, strerror(errno));\
+}} while (0);
+#endif
+
 #ifndef EPS_GROUP
 #define EPS_GROUP
 enum EPS_GROUP {
@@ -42,14 +65,12 @@ typedef struct eps_id {
   uint16_t inst;
   uint16_t seq;
 } eps_id;
-
 typedef struct eps_msg {
   eps_id id;
   int64_t recv_ns;
   uint8_t *data;
   uint16_t size;
 } eps_msg;
-
 struct eps {
   bool sub_group[EPS_GROUPS];
   uint8_t mc_group[EPS_GROUPS][4];
@@ -67,8 +88,8 @@ struct eps {
   int eventn;
   int eventi;
   eps_event events[8];
-  int errn; // copy of errno that can be read after eps_poll or eps_next_msg
-  const char *err;
+
+  char err[128];
 };
 struct eps eps;
 
@@ -78,32 +99,38 @@ void eps_add_sub(eps_msg sub) {
   }
 }
 
-int eps_add_fd(int fd) {
+void eps_add_fd(int fd) {
   eps_event ev;
   ev.events = EPOLLIN;
   ev.data.fd = fd;
-  return epoll_ctl(eps.epoll, EPOLL_CTL_ADD, fd, &ev);
+  EPS_ERRNO_HARD(epoll_ctl(eps.epoll, EPOLL_CTL_ADD, fd, &ev) != -1, "");
 }
 
 int eps_add_timer(uint16_t ivl_ms) {
   int fd = timerfd_create(CLOCK_MONOTONIC, 0);
-  if (fd != -1) {
-    struct itimerspec ts = {0};
-    ts.it_interval.tv_sec  = ivl_ms / 1000;
-    ts.it_interval.tv_nsec = (ivl_ms % 1000) * ((int64_t)1e9);
-    ts.it_value.tv_nsec = 1000;
-    timerfd_settime(fd, 0, &ts, NULL);
-    if (eps_add_fd(fd) != 0) {
-      close(fd);
-      fd = -1;
+  EPS_ERRNO_HARD(fd != -1, "failed to create timer");
+  struct itimerspec ts = {0};
+  ts.it_interval.tv_sec  = ivl_ms / 1000;
+  ts.it_interval.tv_nsec = (ivl_ms % 1000) * ((int64_t)1e9);
+  ts.it_value.tv_nsec = 1000;   
+  EPS_ERRNO_HARD(timerfd_settime(fd, 0, &ts, NULL) != -1, "timerfd_settime");
+  eps_add_fd(fd);
+  return fd;
+}
+uint64_t eps_ev_timer(eps_event *ev, int fd) {
+  if (ev->data.fd == fd) {
+    uint64_t exp = 0;
+    ssize_t s = read(fd, &exp, sizeof(exp));
+    if (s == sizeof(exp)) {
+      return exp;
     }
   }
-  return fd;
+  return 0;
 }
 
 int64_t eps_ns() {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    EPS_ERRNO_HARD(clock_gettime(CLOCK_MONOTONIC, &ts) != -1, "failed clock_gettime");
     return ((int64_t)ts.tv_sec * ((int64_t)1e9)) + ts.tv_nsec;
 }
 
@@ -117,26 +144,24 @@ int eps_init() {
     memcpy(eps.mc_group[0], group, sizeof(group));
   }
 
-  if ((int)eps.mc_group[0][3] + EPS_GROUPS > 0xFF ) {
-    return 1; // TODO err
-  }
-  if ((eps.mc_sock = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0)) < 0) {
-    return 1; // TODO err
-  }
+  EPS_ERR_HARD(((int)eps.mc_group[0][3]) + EPS_GROUPS <= 0xFF, 
+    "mc_group[0][3] + EPS_GROUPS must not overflow");
+  EPS_ERRNO_HARD((eps.mc_sock = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0)) != -1, 
+    "failed to create multicast socket");
+
   int opt = 1;
-  setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  EPS_ERRNO_HARD(setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != -1, "failed SO_REUSEADDR");
   opt = eps.ttl == 0? 1 : eps.loopback; // force loopback if ttl=0 so that stuff happens
-  setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_LOOP, &opt, sizeof(opt));
-  setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &eps.ttl, sizeof(eps.ttl));
+  EPS_ERRNO_HARD(setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_LOOP, &opt, sizeof(opt)) != -1, "failed IP_MULTICAST_LOOP");
+  EPS_ERRNO_HARD(setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &eps.ttl, sizeof(eps.ttl)) != -1, "failed IP_MULTICAST_TTL");
   {
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = INADDR_ANY;
     memcpy(&dst.sin_port, eps.mc_port, sizeof(eps.mc_port));
-    if (bind(eps.mc_sock, (struct sockaddr*) &dst, sizeof(dst)) < 0 ) {
-      return 1; // TODO err
-    }
+    EPS_ERRNO_HARD(bind(eps.mc_sock, (struct sockaddr*) &dst, sizeof(dst)) != -1, 
+      "failed to bind multicast socket");
   }
 
   struct ip_mreq mreq;
@@ -151,41 +176,34 @@ int eps_init() {
       eps.mc_group[i][3] = eps.mc_group[0][3]+i;
     }
     memcpy(&mreq.imr_multiaddr, eps.mc_group[i], 4);
-    if (setsockopt(eps.mc_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
-      return 1; // TODO err
-    }
-    // TODO dont print by default
-    printf("Joined %u.%u.%u.%u\n", 
-      eps.mc_group[i][0], eps.mc_group[i][1], eps.mc_group[i][2], eps.mc_group[i][3]);
-    
+
+    EPS_ERRNO_HARD(
+      setsockopt(eps.mc_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) != -1, 
+      "failed to join %u.%u.%u.%u",
+      eps.mc_group[i][0], eps.mc_group[i][1], eps.mc_group[i][2], eps.mc_group[i][3]
+    );
+
     eps.mc_dst[i].sin_family = AF_INET;
     memcpy(&eps.mc_dst[i].sin_port, eps.mc_port, sizeof(eps.mc_port));
     memcpy(&eps.mc_dst[i].sin_addr, eps.mc_group[i], sizeof(eps.mc_group[i]));
   }
 
-  if ((eps.epoll = epoll_create1(0)) < 0) { return 1; /* TODO err; */ }
-  if (eps_add_fd(eps.mc_sock) < 0) { return 1; /* TODO err */ }
+  EPS_ERRNO_HARD((eps.epoll = epoll_create1(0)) != -1, "");
+  eps_add_fd(eps.mc_sock);
 }
 
 int eps_poll() {
   eps.eventi = 0;
   eps.eventn = epoll_wait(eps.epoll, eps.events, sizeof(eps.events)/sizeof(*eps.events), -1);
-  if (eps.eventn < 0) {
-    if (errno != EINTR) {
-      eps.errn = errno;
-      eps.eventn = 0;
-    }
-  }
+  EPS_ERRNO_SOFT(eps.eventn >= 0, "epoll failed");
   return eps.eventn;
 }
 
-// return pointer to next msg or 0 if no more messages are available.
 eps_msg *eps_next_msg() {
   eps_msg *out = 0;
-
   int len = recv(eps.mc_sock, eps.msg_buf, sizeof(eps.msg_buf), 0);
   if (len < 0) {
-    eps.errn = errno;
+    EPS_ERRNO_SOFT(errno == EAGAIN || errno == EWOULDBLOCK, "eps_next_msg");
   } else if (len >= sizeof(eps_id)) {
     uint8_t *d = eps.msg_buf;
     eps_id id; memcpy(&id, d, sizeof(id));
@@ -218,7 +236,6 @@ eps_msg *eps_next_msg() {
   return out;
 }
 
-// return pointer to next event or 0 if no more messages are available.
 eps_event* eps_next_event() {
   eps_event* out = 0;
   if (eps.eventi < eps.eventn) {
@@ -227,8 +244,9 @@ eps_event* eps_next_event() {
   return out;
 }
 
-int eps_send_ex(int *groups, int groupn, eps_msg *msg) {
-  int out = 0;
+void eps_send_ex(int *groups, int groupn, eps_msg *msg) {
+  EPS_ERR_HARD(msg->size >= sizeof(msg->id), 
+    "msg size too small for eps_id: %d", msg->size);
   memcpy(msg->data, &msg->id, sizeof(msg->id));
   for (int i = 0; i < groupn; i++) {
     if (!(groups[i] < EPS_GROUPS)) {
@@ -238,16 +256,12 @@ int eps_send_ex(int *groups, int groupn, eps_msg *msg) {
       msg->data, msg->size, MSG_DONTWAIT, 
       (struct sockaddr*) eps.mc_dst+groups[i], sizeof(eps.mc_dst)
     );
-    if (r != msg->size) {
-      out = 1;
-      eps.errn = errno;
-    }
+    EPS_ERRNO_SOFT(r == msg->size || errno == EAGAIN || errno == EWOULDBLOCK, "eps_send_ex");
   }
   msg->id.seq++;
-  return out;
 }
-int eps_send(int group, eps_msg *msg) {
-  return eps_send_ex(&group, 1, msg);
+void eps_send(int group, eps_msg *msg) {
+  eps_send_ex(&group, 1, msg);
 }
 
 #endif//EPS_H
