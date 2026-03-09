@@ -15,7 +15,6 @@
 #ifndef EPS_PORT // port used for multicast traffic
 #define EPS_PORT { 0xC5, 0x44 }; // 50500, BE byte order
 #endif
-
 #ifndef EPS_MAX_SUBS 
 #define EPS_MAX_SUBS 128
 #endif
@@ -23,24 +22,20 @@
 #define EPS_MSG_SIZE 1472
 #endif
 
-// can be overriden with your own message groups
 #ifndef EPS_GROUP
 #define EPS_GROUP
 enum EPS_GROUP {
-  EPS_CMD = 0, // cmd streams from authoritative agents
-  EPS_SIG, // signaling messages between agents
-  EPS_TLM, // all other agent data streams, for logging and packing telemetry
-  EPS_RIN, // radio inbound to network
-  EPS_ROT, // radio outbound from network
+  EPS_CMD = 0,
+  EPS_SIG,
+  EPS_TLM,
+  EPS_RIN,
+  EPS_ROT,
   EPS_GROUPS,
 };
 #endif
 
 typedef struct epoll_event eps_event;
 
-// message identification:
-// agent > msg > inst
-// recommend using hashes to keep these values stable
 typedef struct eps_id { 
   uint16_t agent;
   uint16_t msg;
@@ -48,27 +43,26 @@ typedef struct eps_id {
   uint16_t seq;
 } eps_id;
 
-typedef struct eps_sub {
-  eps_id id; // id filter for subscription, 0 fields are wildcards, seq ignored
-  int64_t recv_ns; // timestamp
-  uint8_t *data; // optional ptr to write msg data
-  uint16_t size; // optional sizeof(*data), messages not this size will be dropped
-} eps_sub;
+typedef struct eps_msg {
+  eps_id id;
+  int64_t recv_ns;
+  uint8_t *data;
+  uint16_t size;
+} eps_msg;
 
 struct eps {
-  // params
-  uint8_t sub_group[EPS_GROUPS];
-  uint8_t mc_group[EPS_GROUPS][4]; // big-endian
-  uint8_t mc_port[2]; // big endian
+  bool sub_group[EPS_GROUPS];
+  uint8_t mc_group[EPS_GROUPS][4];
+  uint8_t mc_port[2];
   int loopback;
   int ttl;  
 
   int mc_sock;
-  struct sockaddr_in mc_dst;
+  struct sockaddr_in mc_dst[EPS_GROUPS];
   int subn;
-  eps_sub subs[EPS_MAX_SUBS];
+  eps_msg subs[EPS_MAX_SUBS];
   uint8_t msg_buf[EPS_MSG_SIZE];
-  eps_sub msg_out;
+  eps_msg msg_out;
   int epoll;
   int eventn;
   int eventi;
@@ -78,7 +72,7 @@ struct eps {
 };
 struct eps eps;
 
-void eps_add_sub(eps_sub sub) {
+void eps_add_sub(eps_msg sub) {
   if (eps.subn < EPS_MAX_SUBS) {
     eps.subs[eps.subn++] = sub;
   }
@@ -96,7 +90,7 @@ int eps_add_timer(uint16_t ivl_ms) {
   if (fd != -1) {
     struct itimerspec ts = {0};
     ts.it_interval.tv_sec  = ivl_ms / 1000;
-    ts.it_interval.tv_nsec = (ivl_ms % 1000) * (1000*1000*1000);
+    ts.it_interval.tv_nsec = (ivl_ms % 1000) * ((int64_t)1e9);
     ts.it_value.tv_nsec = 1000;
     timerfd_settime(fd, 0, &ts, NULL);
     if (eps_add_fd(fd) != 0) {
@@ -110,7 +104,7 @@ int eps_add_timer(uint16_t ivl_ms) {
 int64_t eps_ns() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ((int64_t)ts.tv_sec * (1000*1000*1000)) + ts.tv_nsec;
+    return ((int64_t)ts.tv_sec * ((int64_t)1e9)) + ts.tv_nsec;
 }
 
 int eps_init() {
@@ -122,28 +116,27 @@ int eps_init() {
     uint8_t group[4] = EPS_GROUP_BASE;
     memcpy(eps.mc_group[0], group, sizeof(group));
   }
+
   if ((int)eps.mc_group[0][3] + EPS_GROUPS > 0xFF ) {
     return 1; // TODO err
   }
-
   if ((eps.mc_sock = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0)) < 0) {
     return 1; // TODO err
   }
-
   int opt = 1;
   setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-  // setsockopt(eps.mc_sock, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-
-  opt = eps.ttl == 0? 1 : eps.loopback; // force loopback if ttl=0
+  opt = eps.ttl == 0? 1 : eps.loopback; // force loopback if ttl=0 so that stuff happens
   setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_LOOP, &opt, sizeof(opt));
   setsockopt(eps.mc_sock, IPPROTO_IP, IP_MULTICAST_TTL, &eps.ttl, sizeof(eps.ttl));
-
-  memset(&eps.mc_dst, 0, sizeof(eps.mc_dst));
-  eps.mc_dst.sin_family = AF_INET;
-  eps.mc_dst.sin_addr.s_addr = INADDR_ANY;
-  memcpy(&eps.mc_dst.sin_port, eps.mc_port, sizeof(eps.mc_port));
-  if (bind(eps.mc_sock, (struct sockaddr*) &eps.mc_dst, sizeof(eps.mc_dst)) < 0 ) {
-    return 1; // TODO err
+  {
+    struct sockaddr_in dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_addr.s_addr = INADDR_ANY;
+    memcpy(&dst.sin_port, eps.mc_port, sizeof(eps.mc_port));
+    if (bind(eps.mc_sock, (struct sockaddr*) &dst, sizeof(dst)) < 0 ) {
+      return 1; // TODO err
+    }
   }
 
   struct ip_mreq mreq;
@@ -161,9 +154,13 @@ int eps_init() {
     if (setsockopt(eps.mc_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
       return 1; // TODO err
     }
-
+    // TODO dont print by default
     printf("Joined %u.%u.%u.%u\n", 
       eps.mc_group[i][0], eps.mc_group[i][1], eps.mc_group[i][2], eps.mc_group[i][3]);
+    
+    eps.mc_dst[i].sin_family = AF_INET;
+    memcpy(&eps.mc_dst[i].sin_port, eps.mc_port, sizeof(eps.mc_port));
+    memcpy(&eps.mc_dst[i].sin_addr, eps.mc_group[i], sizeof(eps.mc_group[i]));
   }
 
   if ((eps.epoll = epoll_create1(0)) < 0) { return 1; /* TODO err; */ }
@@ -183,8 +180,8 @@ int eps_poll() {
 }
 
 // return pointer to next msg or 0 if no more messages are available.
-eps_sub *eps_next_msg() {
-  eps_sub *out = 0;
+eps_msg *eps_next_msg() {
+  eps_msg *out = 0;
 
   int len = recv(eps.mc_sock, eps.msg_buf, sizeof(eps.msg_buf), 0);
   if (len < 0) {
@@ -194,7 +191,7 @@ eps_sub *eps_next_msg() {
     eps_id id; memcpy(&id, d, sizeof(id));
 
     for (int i = 0; i < eps.subn; i++) {
-      eps_sub sub = eps.subs[i];
+      eps_msg sub = eps.subs[i];
       eps_id sd = sub.id;
       bool match = 1;
       match &= (sd.agent == 0) || (sd.agent == id.agent);
@@ -228,6 +225,29 @@ eps_event* eps_next_event() {
     out = &eps.events[eps.eventi++];
   }
   return out;
+}
+
+int eps_send_ex(int *groups, int groupn, eps_msg *msg) {
+  int out = 0;
+  memcpy(msg->data, &msg->id, sizeof(msg->id));
+  for (int i = 0; i < groupn; i++) {
+    if (!(groups[i] < EPS_GROUPS)) {
+      continue;
+    }
+    int r = sendto(eps.mc_sock, 
+      msg->data, msg->size, MSG_DONTWAIT, 
+      (struct sockaddr*) eps.mc_dst+groups[i], sizeof(eps.mc_dst)
+    );
+    if (r != msg->size) {
+      out = 1;
+      eps.errn = errno;
+    }
+  }
+  msg->id.seq++;
+  return out;
+}
+int eps_send(int group, eps_msg *msg) {
+  return eps_send_ex(&group, 1, msg);
 }
 
 #endif//EPS_H
