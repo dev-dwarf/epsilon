@@ -91,6 +91,7 @@ struct eps {
   int epoll;
   int eventn;
   int eventi;
+  int event_sock;
   eps_event events[8];
 
   char err[128];
@@ -137,7 +138,7 @@ int eps_add_timer(uint16_t ivl_ms) {
   return fd;
 }
 uint64_t eps_ev_timer(eps_event *ev, int fd) {
-  if (ev->data.fd == fd) {
+  if ((ev->events & EPOLLIN) && ev->data.fd == fd) {
     uint64_t exp = 0;
     ssize_t s = read(fd, &exp, sizeof(exp));
     if (s == sizeof(exp)) {
@@ -214,42 +215,51 @@ void eps_init(eps_params params) {
 }
 
 int eps_poll() {
+  eps.event_sock = -1;
   eps.eventi = 0;
   eps.eventn = epoll_wait(eps.epoll, eps.events, sizeof(eps.events)/sizeof(*eps.events), -1);
   EPS_ERRNO_SOFT(eps.eventn >= 0, "epoll failed");
+  for (int i = 0; i < eps.eventn; i++) {
+    if (eps.events[i].data.fd == eps.mc_sock && (eps.events[i].events & EPOLLIN)) {
+      eps.event_sock = i;
+      break;
+    }
+  }
   return eps.eventn;
 }
 
 eps_msg *eps_next_msg() {
   eps_msg *out = 0;
-  int len = recv(eps.mc_sock, eps.msg_buf, sizeof(eps.msg_buf), 0);
-  if (len < 0) {
-    EPS_ERRNO_SOFT(errno == EAGAIN || errno == EWOULDBLOCK, "eps_next_msg");
-  } else if (len >= sizeof(eps_id)) {
-    uint8_t *d = eps.msg_buf;
-    eps_id id; memcpy(&id, d, sizeof(id));
+  if (eps.event_sock >= 0) {
+    int len = recv(eps.mc_sock, eps.msg_buf, sizeof(eps.msg_buf), 0);
+    if (len < 0) {
+      EPS_ERRNO_SOFT(errno == EAGAIN || errno == EWOULDBLOCK, "eps_next_msg");
+    } else if (len >= sizeof(eps_id)) {
+      uint8_t *d = eps.msg_buf;
+      eps_id id; memcpy(&id, d, sizeof(id));
 
-    for (int i = 0; i < eps.subn; i++) {
-      eps_msg sub = eps.subs[i];
-      eps_id sd = sub.id;
-      bool match = 1;
-      match &= (sd.agent == 0) || (sd.agent == id.agent);
-      match &= (sd.msg   == 0) || (sd.msg   == id.msg  );
-      match &= (sd.inst  == 0) || (sd.inst  == id.inst );
-      if (match) {
-        out = &eps.msg_out;
-        eps.msg_out.id = id;
-        eps.msg_out.recv_ns = eps_ns();
-        
-        if (sub.data) {
-          memcpy(sub.data, d, sub.size);
-          eps.msg_out.data = sub.data;
-          eps.msg_out.size = sub.size;
-        } else {
-          eps.msg_out.data = d;
-          eps.msg_out.size = len;
+      for (int i = 0; i < eps.subn; i++) {
+        eps_msg sub = eps.subs[i];
+        eps_id sd = sub.id;
+        bool match = 1;
+        match &= (sd.agent == 0) || (sd.agent == id.agent);
+        match &= (sd.msg   == 0) || (sd.msg   == id.msg  );
+        match &= (sd.inst  == 0) || (sd.inst  == id.inst );
+        if (match) {
+          out = &eps.msg_out;
+          eps.msg_out.id = id;
+          eps.msg_out.recv_ns = eps_ns();
+          
+          if (sub.data) {
+            memcpy(sub.data, d, sub.size);
+            eps.msg_out.data = sub.data;
+            eps.msg_out.size = sub.size;
+          } else {
+            eps.msg_out.data = d;
+            eps.msg_out.size = len;
+          }
+          break;
         }
-        break;
       }
     }
   }
