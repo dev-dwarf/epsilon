@@ -56,7 +56,6 @@ static bool sj5__is_keyword(char *cur, char *end, char *kw) {
     return cur == end || !sj5__is_ident_cont(*cur);
 }
 
-
 sj5_Value sj5_read(sj5_Reader *r) {
     sj5_Value res;
 top:
@@ -140,7 +139,6 @@ top:
     return res;
 }
 
-
 static void sj5__discard_until(sj5_Reader *r, int depth) {
     sj5_Value val;
     val.type = SJ5_NULL;
@@ -149,14 +147,12 @@ static void sj5__discard_until(sj5_Reader *r, int depth) {
     }
 }
 
-
 bool sj5_iter_array(sj5_Reader *r, sj5_Value arr, sj5_Value *val) {
     sj5__discard_until(r, arr.depth);
     *val = sj5_read(r);
     if (val->type == SJ5_ERROR || val->type == SJ5_END) { return false; }
     return true;
 }
-
 
 bool sj5_iter_object(sj5_Reader *r, sj5_Value obj, sj5_Value *key, sj5_Value *val) {
     sj5__discard_until(r, obj.depth);
@@ -167,7 +163,6 @@ bool sj5_iter_object(sj5_Reader *r, sj5_Value obj, sj5_Value *key, sj5_Value *va
     if (val->type == SJ5_ERROR) { return false; }
     return true;
 }
-
 
 void sj5_location(sj5_Reader *r, int *line, int *col) {
     int ln = 1, cl = 1;

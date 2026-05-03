@@ -17,6 +17,11 @@
         name = "api_test";
         src = ./.;
       };
+
+      ilon = pkgs.mkSTU rec {
+        name = "ilon";
+        src = ./.;
+      };
     };
   };
 }
