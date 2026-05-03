@@ -63,14 +63,14 @@ top:
     res.content.str = (u8*)r->cur;
 
     switch (*r->cur) {
-    case ' ': case '\n': case '\r': case '\t':
+    case ' ': case '\n': case '\r': case '\t': case '\v': case '\f':
     case ':': case ',':
         r->cur++;
         goto top;
 
     case '/':
         if (r->cur + 1 != r->end && r->cur[1] == '/') {
-            while (r->cur != r->end && *r->cur != '\n') { r->cur++; }
+            while (r->cur != r->end && *r->cur != '\n' && *r->cur != '\r') { r->cur++; }
         } else if (r->cur + 1 != r->end && r->cur[1] == '*') {
             r->cur += 2;
             while (r->cur + 1 < r->end && !(r->cur[0] == '*' && r->cur[1] == '/')) { r->cur++; }
@@ -82,6 +82,11 @@ top:
         }
         goto top;
 
+    case '.':
+        if (r->cur + 1 >= r->end || r->cur[1] < '0' || r->cur[1] > '9') {
+            r->error = "unknown token"; goto top;
+        }
+        // fallthrough
     case '+': case '-':
     case '0': case '1': case '2': case '3': case '4':
     case '5': case '6': case '7': case '8': case '9':
@@ -94,10 +99,15 @@ top:
         res.type = SJ5_STRING;
         res.content.str = (u8*)r->cur;
         for (;;) {
-            if ( r->cur == r->end) { r->error = "unclosed string"; goto top; }
-            if (*r->cur ==   stop) { break; }
-            if (*r->cur ==   '\\') { r->cur++; }
-            if ( r->cur != r->end) { r->cur++; }
+            if (r->cur == r->end)   { r->error = "unclosed string"; goto top; }
+            if (*r->cur == stop)    { break; }
+            if (*r->cur == '\n' || *r->cur == '\r') { r->error = "unescaped newline in string"; goto top; }
+            if (*r->cur != '\\')    { r->cur++; continue; }
+            r->cur++;
+            if (r->cur != r->end) {
+                if (*r->cur == '\r') { r->cur++; if (r->cur != r->end && *r->cur == '\n') r->cur++; }
+                else { r->cur++; }
+            }
         }
         res.content.len = r->cur - (u8*)res.content.str;
         r->cur++;

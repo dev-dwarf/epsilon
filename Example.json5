@@ -1,0 +1,49 @@
+{
+  _instances: [ "Ex0", "Ex1", "Ex2", "Ex3" ],
+  _enums: {
+    Bar: { 
+      Prop0: 1,
+      Prop1: 2,
+      Prop2: 4,
+    },
+  },
+  _structs: { // struct can contain definitions reused in commands or messages
+    // any top level structs defined in commands/messages will get 
+    // replicated here in the normalized json.
+    Baz: {
+      bop: { _bits: 3, _overflow: "wrap" },
+      bam: { _bits: 11, _signed: true, _scale: 0.1, _array: "Examples" },
+    },
+  },
+  _commands: { // commands are subscribed messages that affect this agent's behavior
+    Command: {
+      _struct: {
+        //_instances: "Examples", // can be any from enums
+        cmd: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "%" },
+      }
+    }
+  },
+  _messages: { // messages contain all the data this agent publishes
+    Status: {
+      _interval_ms: 100,
+      // _instances: "Examples", // can be any from enums, defaults to top level instances
+
+      // bits (int), signed (bool)
+      // min/max or scale/offset (fixed point)
+      //    - codegen should have option to use floats or not for unpacked storage
+      // unit
+      // enum, struct, array
+      // overflow: "wrap" or "clamp" (default)
+
+      _struct: {
+        // members are sorted to get minimum padding in output struct
+        // structs will be padded to ensure 64-bit alignment, on all platforms
+        foo: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "%" },
+
+        bar: { _enum: "Bar" },
+
+        baz: { _struct: "Baz", _array: 8 },
+      }
+    }
+  },
+}
