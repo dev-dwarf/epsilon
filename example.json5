@@ -1,0 +1,42 @@
+{
+  enums: {
+    Examples: [ "Ex0", "Ex1", "Ex2", "Ex3" ],
+    Bar: { 
+      Prop0: 1,
+      Prop1: 2,
+      Prop2: 4,
+    },
+  },
+  structs: { // struct can contain definitions reused in commands or messages
+    // any top level structs defined in commands/messages will get 
+    // replicated here in the normalized json.
+    Baz: {
+      bop: { bits: 3, overflow: "wrap" },
+      bam: { bits: 11, signed: true, scale: 0.1, array: "Examples" },
+    },
+  },
+  commands: { // commands are subscribed messages that affect this agent's behavior
+    Command: {
+      _instances: "Examples", // can be any from enums
+      cmd: { bits: 7, scale: 0.01, offset: -0.27, unit: "%" },
+    }
+  },
+  messages: { // messages contain all the data this agent publishes
+    Status: {
+      _interval_ms: 100,
+      _instances: "Examples", // can be any from enums
+
+      // bits (int), signed (bool)
+      // min/max or scale/offset (fixed point)
+      //    - codegen should have option to use floats or not for unpacked storage
+      // unit
+      // enum, struct, array
+      // overflow: "wrap" or "clamp" (default)
+      foo: { bits: 7, scale: 0.01, offset: -0.27, unit: "%" },
+
+      bar: { enum: "Bar" },
+
+      baz: { struct: "Baz", array: 8 },
+    }
+  },
+}
