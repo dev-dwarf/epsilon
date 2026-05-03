@@ -4,11 +4,10 @@
 #ifndef SJ5_H
 #define SJ5_H
 
-#include <stddef.h>
-#include <stdbool.h>
+#include <lf.h>
 
 typedef struct {
-    char *data, *cur, *end;
+    u8 *data, *cur, *end;
     int depth;
     char *error;
 } sj5_Reader;
@@ -16,12 +15,12 @@ typedef struct {
 enum sj5_Type { SJ5_ERROR, SJ5_END, SJ5_ARRAY, SJ5_OBJECT, SJ5_NUMBER, SJ5_STRING, SJ5_BOOL, SJ5_NULL };
 typedef struct {
     enum sj5_Type type;
-    char *start, *end;
+    str content;
     int depth;
 } sj5_Value;
 
 
-sj5_Reader sj5_reader(char *data, size_t len);
+sj5_Reader sj5_reader(u8 *data, size_t len);
 sj5_Value sj5_read(sj5_Reader *r);
 bool sj5_iter_array(sj5_Reader *r, sj5_Value arr, sj5_Value *val);
 bool sj5_iter_object(sj5_Reader *r, sj5_Value obj, sj5_Value *key, sj5_Value *val);
@@ -30,25 +29,25 @@ void sj5_location(sj5_Reader *r, int *line, int *col);
 #endif//SJ5_H
 #ifdef SJ5_IMPL
 
-sj5_Reader sj5_reader(char *data, size_t len) {
+sj5_Reader sj5_reader(u8 *data, size_t len) {
     return (sj5_Reader){ .data = data, .cur = data, .end = data + len };
 }
 
 
-static bool sj5__is_ident_start(char c) {
+static bool sj5__is_ident_start(u8 c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
 }
 
-static bool sj5__is_ident_cont(char c) {
+static bool sj5__is_ident_cont(u8 c) {
     return sj5__is_ident_start(c) || (c >= '0' && c <= '9');
 }
 
-static bool sj5__is_number_cont(char c) {
+static bool sj5__is_number_cont(u8 c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
         ||  c == 'e' || c == 'E' || c == '.' || c == '-' || c == '+' || c == 'x' || c == 'X';
 }
 
-static bool sj5__is_keyword(char *cur, char *end, char *kw) {
+static bool sj5__is_keyword(u8 *cur, u8 *end, u8 *kw) {
     while (*kw) {
         if (cur == end || *cur != *kw) return false;
         kw++, cur++;
@@ -59,9 +58,9 @@ static bool sj5__is_keyword(char *cur, char *end, char *kw) {
 sj5_Value sj5_read(sj5_Reader *r) {
     sj5_Value res;
 top:
-    if (r->error) { return (sj5_Value){ .type = SJ5_ERROR, .start = r->cur, .end = r->cur }; }
+    if (r->error) { return (sj5_Value){ .type = SJ5_ERROR, .content = (str){ (u8*)r->cur, 0 } }; }
     if (r->cur == r->end) { r->error = "unexpected eof"; goto top; }
-    res.start = r->cur;
+    res.content.str = (u8*)r->cur;
 
     switch (*r->cur) {
     case ' ': case '\n': case '\r': case '\t':
@@ -91,16 +90,17 @@ top:
         break;
 
     case '"': case '\'': {
-        char stop = *r->cur++;
+        u8 stop = *r->cur++;
         res.type = SJ5_STRING;
-        res.start = r->cur;
+        res.content.str = (u8*)r->cur;
         for (;;) {
             if ( r->cur == r->end) { r->error = "unclosed string"; goto top; }
             if (*r->cur ==   stop) { break; }
             if (*r->cur ==   '\\') { r->cur++; }
             if ( r->cur != r->end) { r->cur++; }
         }
-        res.end = r->cur++;
+        res.content.len = r->cur - (u8*)res.content.str;
+        r->cur++;
         return res;
     }
 
@@ -135,7 +135,7 @@ top:
         r->error = "unknown token";
         goto top;
     }
-    res.end = r->cur;
+    res.content.len = r->cur - (u8*)res.content.str;
     return res;
 }
 
@@ -166,7 +166,7 @@ bool sj5_iter_object(sj5_Reader *r, sj5_Value obj, sj5_Value *key, sj5_Value *va
 
 void sj5_location(sj5_Reader *r, int *line, int *col) {
     int ln = 1, cl = 1;
-    for (char *p = r->data; p != r->cur; p++) {
+    for (u8 *p = r->data; p != r->cur; p++) {
         if (*p == '\n') { ln++; cl = 0; }
         cl++;
     }

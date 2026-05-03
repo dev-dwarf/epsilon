@@ -15,7 +15,7 @@ static void print_object(sj5_Reader *r, sj5_Value obj, int indent) {
     printf("{\n");
     while (sj5_iter_object(r, obj, &key, &val)) {
         print_indent(indent + 1);
-        printf("%.*s: ", (int)(key.end - key.start), key.start);
+        printf("%.*s: ", (int)key.content.len, (char*)key.content.str);
         print_value(r, val, indent + 1);
         printf(",\n");
     }
@@ -39,10 +39,10 @@ static void print_value(sj5_Reader *r, sj5_Value val, int indent) {
     switch (val.type) {
     case SJ5_OBJECT: print_object(r, val, indent); break;
     case SJ5_ARRAY:  print_array(r, val, indent);  break;
-    case SJ5_STRING: printf("\"%.*s\"", (int)(val.end - val.start), val.start); break;
+    case SJ5_STRING: printf("\"%.*s\"", (int)val.content.len, (char*)val.content.str); break;
     case SJ5_NUMBER:
     case SJ5_BOOL:
-    case SJ5_NULL:   printf("%.*s", (int)(val.end - val.start), val.start); break;
+    case SJ5_NULL:   printf("%.*s", (int)val.content.len, (char*)val.content.str); break;
     case SJ5_ERROR:  printf("<error>"); break;
     }
 }
