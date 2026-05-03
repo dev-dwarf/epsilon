@@ -13,13 +13,13 @@ typedef struct {
     char *error;
 } sj5_Reader;
 
+enum sj5_Type { SJ5_ERROR, SJ5_END, SJ5_ARRAY, SJ5_OBJECT, SJ5_NUMBER, SJ5_STRING, SJ5_BOOL, SJ5_NULL };
 typedef struct {
-    int type;
+    enum sj5_Type type;
     char *start, *end;
     int depth;
 } sj5_Value;
 
-enum { SJ5_ERROR, SJ5_END, SJ5_ARRAY, SJ5_OBJECT, SJ5_NUMBER, SJ5_STRING, SJ5_BOOL, SJ5_NULL };
 
 sj5_Reader sj5_reader(char *data, size_t len);
 sj5_Value sj5_read(sj5_Reader *r);
@@ -27,10 +27,8 @@ bool sj5_iter_array(sj5_Reader *r, sj5_Value arr, sj5_Value *val);
 bool sj5_iter_object(sj5_Reader *r, sj5_Value obj, sj5_Value *key, sj5_Value *val);
 void sj5_location(sj5_Reader *r, int *line, int *col);
 
-#endif // #ifndef SJ5_H
-
+#endif//SJ5_H
 #ifdef SJ5_IMPL
-
 
 sj5_Reader sj5_reader(char *data, size_t len) {
     return (sj5_Reader){ .data = data, .cur = data, .end = data + len };
@@ -181,4 +179,4 @@ void sj5_location(sj5_Reader *r, int *line, int *col) {
     *col = cl;
 }
 
-#endif // #ifdef SJ5_IMPL
+#endif//SJ5_IMPL
