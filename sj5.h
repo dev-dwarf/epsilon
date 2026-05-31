@@ -15,7 +15,7 @@ typedef struct {
 enum sj5_Type { SJ5_ERROR, SJ5_END, SJ5_ARRAY, SJ5_OBJECT, SJ5_NUMBER, SJ5_STRING, SJ5_BOOL, SJ5_NULL };
 typedef struct {
     enum sj5_Type type;
-    str content;
+    str str;
     int depth;
 } sj5_Value;
 
@@ -58,9 +58,9 @@ static bool sj5__is_keyword(u8 *cur, u8 *end, u8 *kw) {
 sj5_Value sj5_read(sj5_Reader *r) {
     sj5_Value res;
 top:
-    if (r->error) { return (sj5_Value){ .type = SJ5_ERROR, .content = (str){ (u8*)r->cur, 0 } }; }
+    if (r->error) { return (sj5_Value){ .type = SJ5_ERROR, .str = (str){ (u8*)r->cur, 0 } }; }
     if (r->cur == r->end) { r->error = "unexpected eof"; goto top; }
-    res.content.str = (u8*)r->cur;
+    res.str.str = (u8*)r->cur;
 
     switch (*r->cur) {
     case ' ': case '\n': case '\r': case '\t': case '\v': case '\f':
@@ -97,7 +97,7 @@ top:
     case '"': case '\'': {
         u8 stop = *r->cur++;
         res.type = SJ5_STRING;
-        res.content.str = (u8*)r->cur;
+        res.str.str = (u8*)r->cur;
         for (;;) {
             if (r->cur == r->end)   { r->error = "unclosed string"; goto top; }
             if (*r->cur == stop)    { break; }
@@ -109,7 +109,7 @@ top:
                 else { r->cur++; }
             }
         }
-        res.content.len = r->cur - (u8*)res.content.str;
+        res.str.len = r->cur - (u8*)res.str.str;
         r->cur++;
         return res;
     }
@@ -145,7 +145,7 @@ top:
         r->error = "unknown token";
         goto top;
     }
-    res.content.len = r->cur - (u8*)res.content.str;
+    res.str.len = r->cur - (u8*)res.str.str;
     return res;
 }
 

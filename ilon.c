@@ -61,23 +61,56 @@ void append_str(Buf *b, str s) { append(b, s.str, s.len); }
 //////////////////////////////////////////////////////////////////
 
 typedef struct sj5_LL {
-  sj5_LL *next;
+  struct sj5_LL *next;
   sj5_Value v;
+  sj5_Value k;
 } sj5_LL;
 
+#define LL_init(l) sj5_LL *l = 0, **l##_end = &l
+#define LL_append(a, l, V, K) do { if (!*l##_end) { \
+  *l##_end = Arena_struct(a, sj5_LL); \
+  (*l##_end)->v = V; (*l##_end)->k = K; \ 
+  l##_end = &((*l##_end)->next); }} while(0)
+
+typedef struct str_node {
+  struct str_node *next;
+  str str;
+} str_list;
+typedef struct enum_node { 
+  struct enum_node *next;
+  str name;
+  str_node keys;
+  str_node values;
+  bool standard;
+};
+
 Arena a;
-void normalize(const char *input, const char *output) {
-  str src = read_file(&a, "Example.json5");
+void normalize(str agent_file, const char *output) {
+  str agent_name = str_trim_end(agent_file, strl(".json5"));
+  str src = read_file(&a, agent_file.str);
+
+  // sj5_LL *insts = 0, **insts_end = &insts;
+  // sj5_LL *enums = 0, **enums_end = &enums;
+  // sj5_LL *structs = 0, **structs_end = &structs;
+  // sj5_LL *cmds = 0, **cmds_end = &cmds;
+  // sj5_LL *msgs = 0, **msgs_end = &msgs;
+
+  LL_init(insts);
+  LL_init(enums);
+  LL_init(structs);
+  LL_init(cmds);
+  LL_init(msgs);
+
+  enum_node *enums = 0, **enums_end = &enums;
 
   sj5_Reader r = sj5_reader(src.str, src.len);
   sj5_Value root = sj5_read(&r);
   sj5_Value key, val;
   while (sj5_iter_object(&r, root, &key, &val)) {
-    printf("\n");
-
-
-
-
+    if (str_eql(key.str, "_instances")) {
+      // append instances to enums as agent_name
+      LL_append(&a, enums, (sj5_Value) { .str = agent_name, .type = SJ5_STRING }, val);
+    }
   }
 
 
@@ -86,7 +119,7 @@ void normalize(const char *input, const char *output) {
 int main(int argc, char **argv) {
   a = Arena_alloc((Arena){ .size = MB(128) });
 
-  
+  normalize(0, 0);
 
   return 123;
 }

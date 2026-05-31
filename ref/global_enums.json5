@@ -1,0 +1,32 @@
+{
+  None: [ "" ], // Default instance
+  CommandMode: [
+    "Auto",
+    "Manual",
+  ],
+  Enable: [
+    "Disable",
+    "Enable"
+  ],
+  EnableCmd: [
+    "Disable",
+    "Enable"
+  ],
+  Stale: [
+    "Fresh",
+    "Stale",
+  ],
+  Power: [
+    "Off",
+    "On"
+  ],
+  PowerAuto: [
+    "Off",
+    "On",
+    "Auto",
+  ],
+  True: [
+    "False",
+    "True"
+  ],
+}

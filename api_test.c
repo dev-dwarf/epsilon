@@ -7,7 +7,7 @@
 int main(int argc, char *argv[]) {
   eps_init((eps_params){
     .sub_group[EPS_SIG] = 1,
-    .ttl = 0,
+    .ttl = 1,
     .loopback = 1,
   });
 
