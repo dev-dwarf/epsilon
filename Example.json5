@@ -1,0 +1,81 @@
+{
+  _include: [ "_base.json5" ], // other full agents can be included
+  // ^ should be expanded to objects containing same fields as below,
+  // these will be put into generated headers first
+
+  // each member of _enums is an enum name, either array for incremental enum starting
+  // at 0 or can be assigned specific values if an object like below:
+  _enums: { 
+    Bar: { 
+      Prop0: 1,
+      Prop1: 2,
+      Prop2: 4,
+    },
+  },
+
+  // _instances is a special enum that will be assumed to be the different versions of the
+  // agent that can exist. This is for convenience and can be overriden where needed.
+  // should be replicated to _enums in normalized json to reduce codepaths needed
+  _instances: [ "Ex0", "Ex1", "Ex2", "Ex3" ], 
+
+  _structs: { // struct can contain definitions reused in commands or messages
+    // any top level structs defined in commands/messages will get
+    // replicated here in the normalized json.
+    Baz: {
+      bop: { _bits: 3, _overflow: "wrap" },
+      bam: { _bits: 11, _signed: true, _scale: 0.1 },
+    },
+
+    // demonstrates: 16-bit signed scaled fields (each field spans 2 bytes in packed form)
+    Vec3: {
+      x: { _bits: 16, _signed: true, _scale: 0.001, _unit: "m" },
+      y: { _bits: 16, _signed: true, _scale: 0.001, _unit: "m" },
+      z: { _bits: 16, _signed: true, _scale: 0.001, _unit: "m" },
+    },
+  },
+
+  _commands: { // commands are subscribed messages that affect this agent's behavior
+    Command: {
+      _struct: {
+        cmd: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "percent" },
+      }
+    },
+
+    // demonstrates: _fixed (raw s16 stored, not float), inline struct hoisted to _structs
+    Calibrate: {
+      _struct: {
+        offset: { _bits: 16, _signed: true, _scale: 0.001, _fixed: true },
+        target: { _enum: "Bar" },
+        count:  { _bits: 8, _overflow: "wrap" },
+      }
+    },
+  },
+
+  _messages: { // messages contain all the data this agent publishes
+    Status: {
+      _interval_ms: 100,
+
+      _struct: {
+        // members are sorted to get minimum padding in output struct
+        // structs will be padded to ensure 64-bit alignment, on all platforms
+        foo: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "percent" },
+
+        bar: { _enum: "Bar" },
+
+        baz: { _struct: "Baz", _array: 8 },
+
+        bat: { _enum: "True", _array: 8 },
+      }
+    },
+
+    // demonstrates: struct reference (Vec3), 32-bit field, _array with enum name
+    Telemetry: {
+      _interval_ms: 20,
+      _struct: {
+        pos:       { _struct: "Vec3" },
+        timestamp: { _bits: 32 },
+        modes:     { _enum: "Bar", _array: "Example" }, // one Bar value per Example instance
+      }
+    },
+  },
+}
