@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json5 as pyjson5, json, os, sys
+import json5 as pyjson5, json, os, re, sys
 
 def fnv1a(s):
     h = 0x811c9dc5
@@ -17,19 +17,26 @@ def c_size(bits):
 def enum_bits(vals):
     return max(1, max(vals.values()).bit_length()) if vals else 1
 
+_FIELD_KEYS = {'_bits','_signed','_scale','_offset','_unit','_overflow','_fixed','_array','_enum','_struct'}
+
 def norm_field(f):
-    return {
+    u = f.get('_unit', '')
+    if u and not re.match(r'^[a-zA-Z0-9_]+$', u):
+        raise ValueError(f"_unit {u!r} must be alphanumeric+underscore only")
+    out = {
         '_bits':     f.get('_bits', None),
         '_signed':   bool(f.get('_signed', False)),
         '_scale':    float(f.get('_scale', 1.0)),
         '_offset':   float(f.get('_offset', 0.0)),
-        '_unit':     f.get('_unit', ''),
+        '_unit':     u,
         '_overflow': f.get('_overflow', 'clamp'),
         '_fixed':    bool(f.get('_fixed', False)),
         '_array':    f.get('_array', None),
         '_enum':     f.get('_enum', None),
         '_struct':   f.get('_struct', None),
     }
+    out.update({k: v for k, v in f.items() if k not in _FIELD_KEYS})
+    return out
 
 def norm_enum(e):
     if isinstance(e, list): return {k: i for i, k in enumerate(e)}
@@ -63,6 +70,7 @@ def load_norm(path):
                 structs[n] = {k: norm_field(v) for k, v in c['_struct'].items()}
                 co['_struct'] = n
         co['_instances'] = c.get('_instances', name)
+        co.update({k: v for k, v in c.items() if k not in {'_struct', '_instances'}})
         cmds[n] = co
 
     msgs = {}
@@ -75,10 +83,13 @@ def load_norm(path):
                 mo['_struct'] = n
         mo['_instances'] = m.get('_instances', name)
         if '_interval_ms' in m: mo['_interval_ms'] = m['_interval_ms']
+        mo.update({k: v for k, v in m.items() if k not in {'_struct', '_instances', '_interval_ms'}})
         msgs[n] = mo
 
-    return {'_name': name, '_include': [i['_name'] for i in incs], '_included': incs,
-            '_enums': enums, '_structs': structs, '_commands': cmds, '_messages': msgs}
+    result = {'_name': name, '_include': [i['_name'] for i in incs], '_included': incs,
+              '_enums': enums, '_structs': structs, '_commands': cmds, '_messages': msgs}
+    result.update({k: v for k, v in raw.items() if k not in {'_include','_instances','_enums','_structs','_commands','_messages'}})
+    return result
 
 def gather_enums(agent):
     e = {}
@@ -138,30 +149,26 @@ def packed_bits(field, enums, structs):
 
 def gen_enum(name, vals):
     nu = name.upper()
-    L = [f"typedef enum {{"]
-    for k, v in vals.items(): L.append(f"  {nu}_{k.upper()} = {v},")
-    L.append(f"}} {name};\n")
-
-    L.append(f"static inline str {name}_str({name} v) {{")
-    L.append(f"  switch (v) {{")
-    for k in vals: L.append(f'    case {nu}_{k.upper()}: return strl("{k}");')
-    L += [f'    default: return strl(""); }}', f"}}\n"]
-
-    L.append(f"static inline u16 {name}_hash({name} v) {{")
-    L.append(f"  switch (v) {{")
-    for k in vals: L.append(f"    case {nu}_{k.upper()}: return {fnv1a(k)};")
-    L += [f"    default: return 0u; }}", f"}}\n"]
-
-    L.append(f"static inline {name} {name}_from_str(str s) {{")
-    for k in vals: L.append(f'  if (str_eql(s, "{k}")) return {nu}_{k.upper()};')
-    L += [f"  return ({name})-1;", f"}}\n"]
-
-    L.append(f"static inline {name} {name}_from_hash(u16 h) {{")
-    L.append(f"  switch (h) {{")
-    for k in vals: L.append(f"    case {fnv1a(k)}: return {nu}_{k.upper()};")
-    L += [f"    default: return ({name})-1; }}", f"}}\n"]
-
-    return "\n".join(L)
+    return "\n".join([
+        f"typedef enum {{",
+        *[f"  {nu}_{k.upper()} = {v}," for k, v in vals.items()],
+        f"}} {name};\n",
+        f"static inline str {name}_str({name} v) {{",
+        f"  switch (v) {{",
+        *[f'    case {nu}_{k.upper()}: return strl("{k}");' for k in vals],
+        f'    default: return strl(""); }}', f"}}\n",
+        f"static inline u16 {name}_hash({name} v) {{",
+        f"  switch (v) {{",
+        *[f"    case {nu}_{k.upper()}: return {fnv1a(k)};" for k in vals],
+        f"    default: return 0; }}", f"}}\n",
+        f"static inline {name} {name}_from_str(str s) {{",
+        *[f'  if (str_eql(s, "{k}")) return {nu}_{k.upper()};' for k in vals],
+        f"  return ({name})-1;", f"}}\n",
+        f"static inline {name} {name}_from_hash(u16 h) {{",
+        f"  switch (h) {{",
+        *[f"    case {fnv1a(k)}: return {nu}_{k.upper()};" for k in vals],
+        f"    default: return ({name})-1; }}", f"}}\n",
+    ])
 
 def pack_ops(B, N, v):
     ops = []
@@ -184,25 +191,11 @@ def unpack_ops(B, N):
     return " ".join(ops)
 
 def gen_struct(sname, fields, enums, structs, px):
-    L = []
     sfs = sorted(fields.items(), key=lambda x: elem_bytes(x[1], enums, structs, px), reverse=True)
-
-    mems = []
-    for fn, f in sfs:
-        t = upk_type(f, enums, px)
-        cnt = arr_count(f, enums)
-        mems.append((fn, t, f"[{cnt}]" if cnt else ""))
-
-    total_bits = sum(packed_bits(f, enums, structs) for f in fields.values())
-    packed_sz = (total_bits + 7) // 8
-
+    mems = [(fn, upk_type(f, enums, px), f"[{arr_count(f,enums)}]" if arr_count(f,enums) else "") for fn, f in sfs]
+    packed_sz = (sum(packed_bits(f, enums, structs) for f in fields.values()) + 7) // 8
     raw = sum(elem_bytes(f, enums, structs, px) * (arr_count(f, enums) or 1) for _, f in sfs)
     pad = struct_sizeof(fields, enums, structs, px) - raw
-    L.append(f"#define {px.upper()}_{sname.upper()}_PACKED_BYTES {packed_sz}")
-    L.append(f"typedef struct {{")
-    for fn, t, arr_s in mems: L.append(f"  {t} {fn}{arr_s};")
-    if pad: L.append(f"  u8 _pad[{pad}];")
-    L.append(f"}} {px}_{sname};\n")
 
     bit = [0]
 
@@ -211,22 +204,18 @@ def gen_struct(sname, fields, enums, structs, px):
             sf = structs[f['_struct']]
             cnt = arr_count(f, enums)
             if cnt:
-                for i in range(cnt):
-                    for sfn, sf2 in sf.items(): pack_field(f"{fn}[{i}].{sfn}", sf2, acc)
-            else:
-                for sfn, sf2 in sf.items(): pack_field(f"{fn}.{sfn}", sf2, acc)
-            return
+                return "\n".join(pack_field(f"{fn}[{i}].{sfn}", sf2, acc) for i in range(cnt) for sfn, sf2 in sf.items())
+            return "\n".join(pack_field(f"{fn}.{sfn}", sf2, acc) for sfn, sf2 in sf.items())
         cnt = arr_count(f, enums)
+        lines = []
         for i in range(cnt or 1):
             src = f"{acc}{fn}[{i}]" if cnt else f"{acc}{fn}"
             if f['_enum']:
                 nb = enum_bits(enums[f['_enum']])
-                L.append(f"  {pack_ops(bit[0], nb, f'(u64){src}')}")
+                lines += [f"  {pack_ops(bit[0], nb, f'(u64){src}')}"]
             else:
                 nb = f['_bits']
-                sc, ofs = f['_scale'], f['_offset']
-                signed = f['_signed']
-                ov = f['_overflow']
+                sc, ofs, signed, ov = f['_scale'], f['_offset'], f['_signed'], f['_overflow']
                 ub = c_size(nb)
                 ut, st = f"u{ub}", f"s{ub}"
                 lo = -(1 << (nb-1)) if signed else 0
@@ -235,52 +224,58 @@ def gen_struct(sname, fields, enums, structs, px):
                 if (sc != 1.0 or ofs != 0.0) and not f['_fixed']:
                     expr = f"CLAMP(({src} - {ofs}f) / {sc}f, {lo}, {hi})" if ov == 'clamp' \
                            else f"({src} - {ofs}f) / {sc}f"
-                    L.append(f"  {{ {ct} _r=({ct})({expr}); {pack_ops(bit[0], nb, f'(u64)({ut})_r')} }}")
+                    lines += [f"  {{ {ct} _r=({ct})({expr}); {pack_ops(bit[0], nb, f'(u64)({ut})_r')} }}"]
                 elif ov == 'clamp':
-                    L.append(f"  {{ {ct} _r=({ct})CLAMP({src},{lo},{hi}); {pack_ops(bit[0], nb, f'(u64)({ut})_r')} }}")
+                    lines += [f"  {{ {ct} _r=({ct})CLAMP({src},{lo},{hi}); {pack_ops(bit[0], nb, f'(u64)({ut})_r')} }}"]
                 else:
-                    L.append(f"  {pack_ops(bit[0], nb, f'(u64)({ut}){src}')}")
+                    lines += [f"  {pack_ops(bit[0], nb, f'(u64)({ut}){src}')}"]
             bit[0] += nb
-
-    L.append(f"static inline void {px}_{sname}_pack(u8 *buf, const {px}_{sname} *s) {{")
-    L.append(f"  memset(buf, 0, {packed_sz});")
-    for fn, f in fields.items(): pack_field(fn, f, "s->")
-    L.append(f"}}\n")
+        return "\n".join(lines)
 
     def unpack_field(fn, f, acc):
         if f['_struct']:
             sf = structs[f['_struct']]
             cnt = arr_count(f, enums)
             if cnt:
-                for i in range(cnt):
-                    for sfn, sf2 in sf.items(): unpack_field(f"{fn}[{i}].{sfn}", sf2, acc)
-            else:
-                for sfn, sf2 in sf.items(): unpack_field(f"{fn}.{sfn}", sf2, acc)
-            return
+                return "\n".join(unpack_field(f"{fn}[{i}].{sfn}", sf2, acc) for i in range(cnt) for sfn, sf2 in sf.items())
+            return "\n".join(unpack_field(f"{fn}.{sfn}", sf2, acc) for sfn, sf2 in sf.items())
         cnt = arr_count(f, enums)
+        lines = []
         for i in range(cnt or 1):
             dst = f"{acc}{fn}[{i}]" if cnt else f"{acc}{fn}"
             if f['_enum']:
                 nb = enum_bits(enums[f['_enum']])
-                L.append(f"  {{ {unpack_ops(bit[0], nb)} {dst}=(u{c_size(nb)})_r; }}")
+                lines += [f"  {{ {unpack_ops(bit[0], nb)} {dst}=(u{c_size(nb)})_r; }}"]
             else:
                 nb = f['_bits']
-                sc, ofs = f['_scale'], f['_offset']
-                signed = f['_signed']
+                sc, ofs, signed = f['_scale'], f['_offset'], f['_signed']
                 ub = c_size(nb)
                 se = f"(s64)(_r<<(64-{nb}))>>(64-{nb})" if signed else "_r"
                 if (sc != 1.0 or ofs != 0.0) and not f['_fixed']:
-                    L.append(f"  {{ {unpack_ops(bit[0], nb)} {dst}=(f32)({se})*{sc}f+{ofs}f; }}")
+                    lines += [f"  {{ {unpack_ops(bit[0], nb)} {dst}=(f32)({se})*{sc}f+{ofs}f; }}"]
                 else:
-                    L.append(f"  {{ {unpack_ops(bit[0], nb)} {dst}=({'s'if signed else 'u'}{ub})({se}); }}")
+                    lines += [f"  {{ {unpack_ops(bit[0], nb)} {dst}=({'s'if signed else 'u'}{ub})({se}); }}"]
             bit[0] += nb
+        return "\n".join(lines)
 
+    pack_lines = [pack_field(fn, f, "s->") for fn, f in fields.items()]
     bit[0] = 0
-    L.append(f"static inline void {px}_{sname}_unpack(const u8 *buf, {px}_{sname} *s) {{")
-    for fn, f in fields.items(): unpack_field(fn, f, "s->")
-    L.append(f"}}\n")
+    unpack_lines = [unpack_field(fn, f, "s->") for fn, f in fields.items()]
 
-    return "\n".join(L)
+    return "\n".join([
+        f"#define {px.upper()}_{sname.upper()}_PACKED_BYTES {packed_sz}",
+        f"typedef struct {{",
+        *[f"  {t} {fn}{arr_s};" for fn, t, arr_s in mems],
+        *([f"  u8 _pad[{pad}];"] if pad else []),
+        f"}} {px}_{sname};\n",
+        f"static inline void {px}_{sname}_pack(u8 *buf, const {px}_{sname} *s) {{",
+        f"  memset(buf, 0, {packed_sz});",
+        *pack_lines,
+        f"}}\n",
+        f"static inline void {px}_{sname}_unpack(const u8 *buf, {px}_{sname} *s) {{",
+        *unpack_lines,
+        f"}}\n",
+    ])
 
 def gen_ros2msg_const(msg_name, sname, enums, structs, px):
     module = px.lower() + '_msgs'
@@ -310,42 +305,54 @@ def gen_ros2msg_const(msg_name, sname, enums, structs, px):
             for _, f in sfs:
                 if f['_enum'] and f['_enum'] not in seen_enums:
                     seen_enums.add(f['_enum'])
-                    for k, v in enums[f['_enum']].items():
-                        lines.append(f"uint32 {f['_enum'].upper()}_{k.upper()}={v}")
-        for fn, f in sfs:
-            cnt = arr_count(f, enums)
-            lines.append(f"{ftype(f)}{'['+str(cnt)+']' if cnt else ''} {fn}")
-    L = [f"static const char {px}_{msg_name}_IDL[] ="]
-    for line in lines: L.append(f'    "{line}\\n"')
-    L[-1] += ';'
-    return '\n'.join(L) + '\n'
+                    lines += [f"uint32 {f['_enum'].upper()}_{k.upper()}={v}" for k, v in enums[f['_enum']].items()]
+        lines += [f"{ftype(f)}{'['+str(arr_count(f,enums))+']' if arr_count(f,enums) else ''} {fn}{'_'+f['_unit'] if f['_unit'] != "" else ""}" for fn, f in sfs]
+    idl = [f'    "{line}\\n"' for line in lines]
+    idl[-1] += ';'
+    return f"static const char {px}_{msg_name}_IDL[] =\n" + '\n'.join(idl) + '\n'
 
 def gen_eps(a_name, msgs, cmds, structs, enums, px):
-    L = []
-    L.append(f"#ifdef EPS_H")
-    L.append(f"#define AGENT_{px.upper()}_HASH {fnv1a(a_name)}")
-    L.append("")
-
     def gen_one(name, sn, ie):
         pu, pxl, nl = px.upper(), px.lower(), name.lower()
         px_nu = f"{pu}_{name.upper()}"
         pub_size = f"(sizeof(eps_id) + sizeof({px}_{sn}))"
-        L.append(f"#define {px_nu}_HASH {fnv1a(name)}")
-        L.append(f"#define {px_nu}_PUB_SIZE {pub_size}")
-        L.append(f"static inline void {px}_{name}_send(int group, {ie} inst, const {px}_{sn} *s) {{")
-        L.append(f" static uint8_t _{pxl}_{nl}_buf[{px_nu}_PUB_SIZE];")
-        L.append(f" static eps_msg _{pxl}_{nl}_msg = {{ .id={{.agent=AGENT_{pu}_HASH,.msg={px_nu}_HASH}}, .data=_{pxl}_{nl}_buf, .size={px_nu}_PUB_SIZE}};")
-        L.append(f"  _{pxl}_{nl}_msg.id.inst = {ie}_hash(inst);")
-        L.append(f"  memcpy(_{pxl}_{nl}_buf + sizeof(eps_id), s, sizeof({px}_{sn}));")
-        L.append(f"  eps_send(group, &_{pxl}_{nl}_msg); }}")
-        L.append(f"#define {px}_{name}_sub(inst, buf) \\")
-        L.append(f"  eps_add_sub((eps_msg){{.id={{.agent=AGENT_{pu}_HASH,.msg={px_nu}_HASH,.inst={ie}_hash(inst)}},.data=(uint8_t*)(buf),.size={px_nu}_PUB_SIZE}})")
-        L.append("")
+        return "\n".join([
+            f"#define {px_nu}_HASH {fnv1a(name)}",
+            f"#define {px_nu}_PUB_SIZE {pub_size}",
+            f"static inline void {px}_{name}_send(int group, {ie} inst, const {px}_{sn} *s) {{",
+            f" static uint8_t _{pxl}_{nl}_buf[{px_nu}_PUB_SIZE];",
+            f" static eps_msg _{pxl}_{nl}_msg = {{ .id={{.agent=AGENT_{pu}_HASH,.msg={px_nu}_HASH}}, .data=_{pxl}_{nl}_buf, .size={px_nu}_PUB_SIZE}};",
+            f"  _{pxl}_{nl}_msg.id.inst = {ie}_hash(inst);",
+            f"  memcpy(_{pxl}_{nl}_buf + sizeof(eps_id), s, sizeof({px}_{sn}));",
+            f"  eps_send(group, &_{pxl}_{nl}_msg); }}",
+            f"#define {px}_{name}_sub(inst, buf) \\",
+            f"  eps_add_sub((eps_msg){{.id={{.agent=AGENT_{pu}_HASH,.msg={px_nu}_HASH,.inst={ie}_hash(inst)}},.data=(uint8_t*)(buf),.size={px_nu}_PUB_SIZE}})",
+            "",
+        ])
+    return "\n".join([
+        f"#ifdef EPS_H",
+        f"#define AGENT_{px.upper()}_HASH {fnv1a(a_name)}",
+        "",
+        *[gen_one(mn, msg.get('_struct'), msg.get('_instances', a_name)) for mn, msg in msgs.items()],
+        *[gen_one(cn, cmd.get('_struct'), cmd.get('_instances', a_name)) for cn, cmd in cmds.items()],
+        f"#endif // EPS_H",
+    ])
 
-    for mn, msg in msgs.items(): gen_one(mn, msg.get('_struct'), msg.get('_instances', a_name))
-    for cn, cmd in cmds.items(): gen_one(cn, cmd.get('_struct'), cmd.get('_instances', a_name))
-    L.append(f"#endif // EPS_H")
-    return "\n".join(L)
+def fmt_json(obj, d=0):
+    p, ip = '  '*d, '  '*(d+1)
+    if isinstance(obj, dict):
+        if not obj: return '{}'
+        if all(not isinstance(v, (dict, list)) for v in obj.values()):
+            return '{' + ', '.join(f'{json.dumps(k)}: {json.dumps(v)}' for k, v in obj.items()) + '}'
+        inner = ',\n'.join(f'{ip}{json.dumps(k)}: {fmt_json(v, d+1)}' for k, v in obj.items())
+        return '{\n' + inner + '\n' + p + '}'
+    if isinstance(obj, list):
+        if not obj: return '[]'
+        if all(not isinstance(v, (dict, list)) for v in obj):
+            return '[' + ', '.join(json.dumps(v) for v in obj) + ']'
+        inner = ',\n'.join(f'{ip}{fmt_json(v, d+1)}' for v in obj)
+        return '[\n' + inner + '\n' + p + ']'
+    return json.dumps(obj)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -356,39 +363,35 @@ if __name__ == '__main__':
     agent = load_norm(path)
     px = agent['_name']
 
+    enums = gather_enums(agent)
+    structs = gather_structs(agent)
+    for sfs in structs.values():
+        for f in sfs.values():
+            if f['_enum'] and f['_bits'] is None and f['_enum'] in enums:
+                f['_bits'] = enum_bits(enums[f['_enum']])
+
     def clean(d):
         if isinstance(d, dict): return {k: clean(v) for k, v in d.items() if k != '_included'}
         if isinstance(d, list): return [clean(i) for i in d]
         return d
-    json_str = json.dumps(clean(agent), indent=2)
+    json_str = fmt_json(clean(agent))
 
-    enums = gather_enums(agent)
-    structs = gather_structs(agent)
-
-    def emit_agent_defs(a, L):
-        for inc in a.get('_included', []):
-            emit_agent_defs(inc, L)
+    def emit_agent_defs(a):
         g = f"{a['_name'].upper()}_DEFINED"
-        L += [f"#ifndef {g}", f"#define {g}", ""]
         ipx = a['_name']
-        for n, vals in a['_enums'].items(): L.append(gen_enum(n, vals))
-        for n, sfs in a['_structs'].items(): L.append(gen_struct(n, sfs, enums, structs, ipx))
-        for mn, msg in a['_messages'].items():
-            sn = msg.get('_struct')
-            if sn and sn in structs: L.append(gen_ros2msg_const(mn, sn, enums, structs, ipx))
-        L.append(gen_eps(a['_name'], a['_messages'], a['_commands'], structs, enums, ipx))
-        L += ["#endif", ""]
+        return "\n".join([
+            *[emit_agent_defs(inc) for inc in a.get('_included', [])],
+            f"#ifndef {g}", f"#define {g}", "",
+            *[gen_enum(n, vals) for n, vals in a['_enums'].items()],
+            *[gen_struct(n, sfs, enums, structs, ipx) for n, sfs in a['_structs'].items()],
+            *[gen_ros2msg_const(mn, msg['_struct'], enums, structs, ipx)
+              for mn, msg in a['_messages'].items() if msg.get('_struct') in structs],
+            gen_eps(a['_name'], a['_messages'], a['_commands'], structs, enums, ipx),
+            "#endif", "",
+        ])
 
     fg = f"{px.upper()}_H"
-    L = [
-        f"#ifndef {fg}",
-        f"#define {fg}",
-        "#include <lf.h>",
-        "",
-    ]
-    emit_agent_defs(agent, L)
-    L.append(f"#endif")
-    header = "\n".join(L)
+    header = "\n".join([f"#ifndef {fg}", f"#define {fg}", "#include <lf.h>", "", emit_agent_defs(agent), f"#endif"])
 
     if mode == '--json':
         print(json_str)

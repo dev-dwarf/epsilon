@@ -37,7 +37,7 @@
   _commands: { // commands are subscribed messages that affect this agent's behavior
     Command: {
       _struct: {
-        cmd: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "%" },
+        cmd: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "percent" },
       }
     },
 
@@ -58,7 +58,7 @@
       _struct: {
         // members are sorted to get minimum padding in output struct
         // structs will be padded to ensure 64-bit alignment, on all platforms
-        foo: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "%" },
+        foo: { _bits: 7, _scale: 0.01, _offset: -0.27, _unit: "percent" },
 
         bar: { _enum: "Bar" },
 

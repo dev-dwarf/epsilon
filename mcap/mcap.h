@@ -18,6 +18,9 @@
 #ifndef MCAP_MAX_CHANNELS
 #define MCAP_MAX_CHANNELS 64
 #endif
+#ifndef MCAP_BUF_SIZE
+#define MCAP_BUF_SIZE 4096
+#endif
 
 typedef struct {
     int  fd;
@@ -29,13 +32,20 @@ typedef struct {
     u64  msg_end_time;
     u32  seq[MCAP_MAX_CHANNELS];
     u64  ch_msg_count[MCAP_MAX_CHANNELS];
+    u8   buf[MCAP_BUF_SIZE];
+    u32  buf_pos;
 } mcap_writer;
 
 // internal helpers
 
-static inline void mcap__raw(mcap_writer *w, const void *buf, u32 n) {
-    write(w->fd, buf, n);
-    w->bytes_written += n;
+static inline void mcap__raw(mcap_writer *w, const void *data, u32 n) {
+    memcpy(w->buf + w->buf_pos, data, n);
+    w->buf_pos += n;
+}
+static inline void mcap__flush(mcap_writer *w) {
+    write(w->fd, w->buf, w->buf_pos);
+    w->bytes_written += buf_pos;
+    w->buf_pos = 0;
 }
 static inline void mcap__u8 (mcap_writer *w, u8  v) { mcap__raw(w, &v, 1); }
 static inline void mcap__u16(mcap_writer *w, u16 v) { u8 b[2]={v,v>>8}; mcap__raw(w,b,2); }
@@ -61,6 +71,7 @@ static inline void mcap_open(mcap_writer *w, int fd) {
     mcap__rec(w, MCAP_OP_HEADER, 16);
     mcap__str(w, "ros2");
     mcap__str(w, "ilon");
+    mcap__flush(w);
 }
 
 // Returns schema_id. idl_data is the IDL text (e.g. Example_Status_IDL), idl_len = sizeof-1.
@@ -71,9 +82,10 @@ static inline u16 mcap_schema(mcap_writer *w, const char *name,
     mcap__rec(w, MCAP_OP_SCHEMA, clen);
     mcap__u16(w, id);
     mcap__str(w, name);
-    mcap__str(w, "ros2msg");
+    mcap__str(w, "ros2msg"); // pretends to be ros for maximum compatibility.
     mcap__u32(w, idl_len);
     mcap__raw(w, idl_data, idl_len);
+    mcap__flush(w);
     return id;
 }
 
@@ -87,6 +99,7 @@ static inline u16 mcap_channel(mcap_writer *w, u16 schema_id, const char *topic)
     mcap__str(w, topic);
     mcap__str(w, "cdr");
     mcap__u32(w, 0);
+    mcap__flush(w);
     return id;
 }
 
@@ -103,6 +116,7 @@ static inline void mcap_message(mcap_writer *w, u16 channel_id, u64 log_time_ns,
     mcap__u64(w, log_time_ns);
     mcap__raw(w, cdr_hdr, 4);
     mcap__raw(w, cstruct, struct_size);
+    mcap__flush(w);
     w->msg_count++;
     w->ch_msg_count[channel_id]++;
     if (log_time_ns < w->msg_start_time) w->msg_start_time = log_time_ns;
@@ -119,6 +133,7 @@ static inline void mcap_close(mcap_writer *w) {
     mcap__u64(w, 0);  // summary_offset_start = 0
     mcap__u32(w, 0);  // summary CRC disabled
     mcap__raw(w, mcap__magic, 8);
+    mcap__flush(w);
 }
 
 #endif // MCAP_H
