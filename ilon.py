@@ -358,8 +358,7 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} [--json|--header] <agent.json5>", file=sys.stderr)
         sys.exit(1)
-    mode = sys.argv[1] if sys.argv[1].startswith('--') else None
-    path = sys.argv[2] if mode else sys.argv[1]
+    path = sys.argv[1]
     agent = load_norm(path)
     px = agent['_name']
 
@@ -393,11 +392,6 @@ if __name__ == '__main__':
     fg = f"{px.upper()}_H"
     header = "\n".join([f"#ifndef {fg}", f"#define {fg}", "#include <lf.h>", "", emit_agent_defs(agent), f"#endif"])
 
-    if mode == '--json':
-        print(json_str)
-    elif mode == '--header':
-        print(header)
-    else:
-        d = os.path.dirname(path) or '.'
-        open(os.path.join(d, f"{px}.json"), 'w').write(json_str + '\n')
-        open(os.path.join(d, f"{px}.h"), 'w').write(header + '\n')
+    d = os.path.dirname(path) or '.'
+    open(os.path.join(d, f"{px}.json"), 'w').write(json_str + '\n')
+    open(os.path.join(d, f"{px}.h"), 'w').write(header + '\n')
