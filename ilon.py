@@ -6,10 +6,10 @@ def fnv1a(s):
     for c in s:
         x = ord(c)
         if ord('A') <= x <= ord('Z'): x |= 0x20  # lf.h str_hash_fnv1a lowercases before hashing
-        h = ((x ^ h) * 0x01000193) & 0xFFFFFFFF
-    return h
+        h = ((x ^ h) * 0x01000193) & 0xFFFF
+    return f"0x{h:04X}"
 
-def c_up(bits):
+def c_size(bits):
     for s in [8, 16, 32, 64]:
         if bits <= s: return s
     raise ValueError(f"bits={bits} too large")
@@ -94,9 +94,9 @@ def gather_structs(agent):
 
 def upk_type(field, enums, px):
     if field['_struct']: return f"{px}_{field['_struct']}"
-    if field['_enum']: return f"u{c_up(enum_bits(enums[field['_enum']]))}"
+    if field['_enum']: return 'u32'  # XCDR1 enums are always 32-bit on the wire
     if (field['_scale'] != 1.0 or field['_offset'] != 0.0) and not field['_fixed']: return 'f32'
-    return f"{'s' if field['_signed'] else 'u'}{c_up(field['_bits'])}"
+    return f"{'s' if field['_signed'] else 'u'}{c_size(field['_bits'])}"
 
 def struct_align(sfields, enums, structs, px):
     ma = 1
@@ -147,18 +147,18 @@ def gen_enum(name, vals):
     for k in vals: L.append(f'    case {nu}_{k.upper()}: return strl("{k}");')
     L += [f'    default: return strl(""); }}', f"}}\n"]
 
-    L.append(f"static inline u32 {name}_hash({name} v) {{")
+    L.append(f"static inline u16 {name}_hash({name} v) {{")
     L.append(f"  switch (v) {{")
-    for k in vals: L.append(f"    case {nu}_{k.upper()}: return 0x{fnv1a(k):08x}u;")
+    for k in vals: L.append(f"    case {nu}_{k.upper()}: return {fnv1a(k)};")
     L += [f"    default: return 0u; }}", f"}}\n"]
 
     L.append(f"static inline {name} {name}_from_str(str s) {{")
     for k in vals: L.append(f'  if (str_eql(s, "{k}")) return {nu}_{k.upper()};')
     L += [f"  return ({name})-1;", f"}}\n"]
 
-    L.append(f"static inline {name} {name}_from_hash(u32 h) {{")
+    L.append(f"static inline {name} {name}_from_hash(u16 h) {{")
     L.append(f"  switch (h) {{")
-    for k in vals: L.append(f"    case 0x{fnv1a(k):08x}u: return {nu}_{k.upper()};")
+    for k in vals: L.append(f"    case {fnv1a(k)}: return {nu}_{k.upper()};")
     L += [f"    default: return ({name})-1; }}", f"}}\n"]
 
     return "\n".join(L)
@@ -227,7 +227,7 @@ def gen_struct(sname, fields, enums, structs, px):
                 sc, ofs = f['_scale'], f['_offset']
                 signed = f['_signed']
                 ov = f['_overflow']
-                ub = c_up(nb)
+                ub = c_size(nb)
                 ut, st = f"u{ub}", f"s{ub}"
                 lo = -(1 << (nb-1)) if signed else 0
                 hi = (1 << (nb-1)) - 1 if signed else (1 << nb) - 1
@@ -262,12 +262,12 @@ def gen_struct(sname, fields, enums, structs, px):
             dst = f"{acc}{fn}[{i}]" if cnt else f"{acc}{fn}"
             if f['_enum']:
                 nb = enum_bits(enums[f['_enum']])
-                L.append(f"  {{ {unpack_ops(bit[0], nb)} {dst}=(u{c_up(nb)})_r; }}")
+                L.append(f"  {{ {unpack_ops(bit[0], nb)} {dst}=(u{c_size(nb)})_r; }}")
             else:
                 nb = f['_bits']
                 sc, ofs = f['_scale'], f['_offset']
                 signed = f['_signed']
-                ub = c_up(nb)
+                ub = c_size(nb)
                 se = f"(s64)(_r<<(64-{nb}))>>(64-{nb})" if signed else "_r"
                 if (sc != 1.0 or ofs != 0.0) and not f['_fixed']:
                     L.append(f"  {{ {unpack_ops(bit[0], nb)} {dst}=(f32)({se})*{sc}f+{ofs}f; }}")
@@ -282,19 +282,9 @@ def gen_struct(sname, fields, enums, structs, px):
 
     return "\n".join(L)
 
-def idl_type(field, enums, px):
-    if field['_enum']: return f"{px}_{field['_enum']}"
-    t = upk_type(field, enums, px)
-    m = {'f32':'float','f64':'double','u8':'uint8','u16':'uint16','u32':'uint32','u64':'uint64',
-         's8':'int8','s16':'int16','s32':'int32','s64':'int64'}
-    if t in m: return m[t]
-    if field['_struct']: return field['_struct']
-    return t
-
-def gen_idl_const(msg_name, sname, enums, structs, px):
+def gen_ros2msg_const(msg_name, sname, enums, structs, px):
     module = px.lower() + '_msgs'
-    # collect dependency order: nested structs first, root last (single section)
-    order, seen, seen_enums = [], set(), set()
+    order, seen = [], set()
     def collect(n):
         if n in seen: return
         seen.add(n)
@@ -303,36 +293,59 @@ def gen_idl_const(msg_name, sname, enums, structs, px):
             if f['_struct'] and f['_struct'] in structs: collect(f['_struct'])
         order.append(n)
     collect(sname)
-    body = []
-    for dep in order:
+    def ftype(f):
+        if f['_enum']: return 'uint32'
+        if f['_struct']: return f['_struct']  # short name; dep section uses package/Type
+        m = {'f32':'float32','f64':'float64','u8':'uint8','u16':'uint16','u32':'uint32',
+             'u64':'uint64','s8':'int8','s16':'int16','s32':'int32','s64':'int64'}
+        return m.get(upk_type(f, enums, px), upk_type(f, enums, px))
+    # root type: fields start immediately (NO section header), matching ros2msg spec.
+    # dep types: preceded by "===...\nMSG: package/Type" (no /msg/ in path).
+    lines, seen_enums = [], set()
+    for i, dep in enumerate(reversed(order)):
         sfs = sorted(structs[dep].items(), key=lambda x: elem_bytes(x[1], enums, structs, px), reverse=True)
-        raw = sum(elem_bytes(f, enums, structs, px) * (arr_count(f, enums) or 1) for _, f in sfs)
-        pad = struct_sizeof(structs[dep], enums, structs, px) - raw
-        for _, f in sfs:
-            if f['_enum'] and f['_enum'] not in seen_enums:
-                seen_enums.add(f['_enum'])
-                ename, nb = f['_enum'], c_up(enum_bits(enums[f['_enum']]))
-                vals_list = list(enums[ename].items())
-                body.append(f"    @bit_bound({nb})")
-                body.append(f"    enum {px}_{ename} {{")
-                for j, (k, v) in enumerate(vals_list):
-                    body.append(f"      @value({v}) {k}{',' if j < len(vals_list)-1 else ''}")
-                body.append(f"    }};")
-        body.append(f"    struct {dep} {{")
+        if i > 0:
+            lines += ['=' * 80, f"MSG: {module}/{dep}"]
+        if dep == sname:
+            for _, f in sfs:
+                if f['_enum'] and f['_enum'] not in seen_enums:
+                    seen_enums.add(f['_enum'])
+                    for k, v in enums[f['_enum']].items():
+                        lines.append(f"uint32 {f['_enum'].upper()}_{k.upper()}={v}")
         for fn, f in sfs:
             cnt = arr_count(f, enums)
-            body.append(f"      {idl_type(f, enums, px)} {fn}{'['+str(cnt)+']' if cnt else ''};")
-        if pad: body.append(f"      uint8 _pad[{pad}];")
-        body.append(f"    }};")
+            lines.append(f"{ftype(f)}{'['+str(cnt)+']' if cnt else ''} {fn}")
     L = [f"static const char {px}_{msg_name}_IDL[] ="]
-    L.append(f'    "{"="*80}\\n"')
-    L.append(f'    "IDL: {module}/msg/{msg_name}\\n"')
-    L.append(f'    "module {module} {{\\n"')
-    L.append(f'    "  module msg {{\\n"')
-    for line in body: L.append(f'    "{line}\\n"')
-    L.append(f'    "  }};\\n"')
-    L.append(f'    "}};\\n";')
-    return "\n".join(L) + "\n"
+    for line in lines: L.append(f'    "{line}\\n"')
+    L[-1] += ';'
+    return '\n'.join(L) + '\n'
+
+def gen_eps(a_name, msgs, cmds, structs, enums, px):
+    L = []
+    L.append(f"#ifdef EPS_H")
+    L.append(f"#define AGENT_{px.upper()}_HASH {fnv1a(a_name)}")
+    L.append("")
+
+    def gen_one(name, sn, ie):
+        pu, pxl, nl = px.upper(), px.lower(), name.lower()
+        px_nu = f"{pu}_{name.upper()}"
+        pub_size = f"(sizeof(eps_id) + sizeof({px}_{sn}))"
+        L.append(f"#define {px_nu}_HASH {fnv1a(name)}")
+        L.append(f"#define {px_nu}_PUB_SIZE {pub_size}")
+        L.append(f"static inline void {px}_{name}_send(int group, {ie} inst, const {px}_{sn} *s) {{")
+        L.append(f" static uint8_t _{pxl}_{nl}_buf[{px_nu}_PUB_SIZE];")
+        L.append(f" static eps_msg _{pxl}_{nl}_msg = {{ .id={{.agent=AGENT_{pu}_HASH,.msg={px_nu}_HASH}}, .data=_{pxl}_{nl}_buf, .size={px_nu}_PUB_SIZE}};")
+        L.append(f"  _{pxl}_{nl}_msg.id.inst = {ie}_hash(inst);")
+        L.append(f"  memcpy(_{pxl}_{nl}_buf + sizeof(eps_id), s, sizeof({px}_{sn}));")
+        L.append(f"  eps_send(group, &_{pxl}_{nl}_msg); }}")
+        L.append(f"#define {px}_{name}_sub(inst, buf) \\")
+        L.append(f"  eps_add_sub((eps_msg){{.id={{.agent=AGENT_{pu}_HASH,.msg={px_nu}_HASH,.inst={ie}_hash(inst)}},.data=(uint8_t*)(buf),.size={px_nu}_PUB_SIZE}})")
+        L.append("")
+
+    for mn, msg in msgs.items(): gen_one(mn, msg.get('_struct'), msg.get('_instances', a_name))
+    for cn, cmd in cmds.items(): gen_one(cn, cmd.get('_struct'), cmd.get('_instances', a_name))
+    L.append(f"#endif // EPS_H")
+    return "\n".join(L)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -362,7 +375,8 @@ if __name__ == '__main__':
         for n, sfs in a['_structs'].items(): L.append(gen_struct(n, sfs, enums, structs, ipx))
         for mn, msg in a['_messages'].items():
             sn = msg.get('_struct')
-            if sn and sn in structs: L.append(gen_idl_const(mn, sn, enums, structs, ipx))
+            if sn and sn in structs: L.append(gen_ros2msg_const(mn, sn, enums, structs, ipx))
+        L.append(gen_eps(a['_name'], a['_messages'], a['_commands'], structs, enums, ipx))
         L += ["#endif", ""]
 
     fg = f"{px.upper()}_H"

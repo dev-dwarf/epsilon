@@ -71,7 +71,7 @@ static inline u16 mcap_schema(mcap_writer *w, const char *name,
     mcap__rec(w, MCAP_OP_SCHEMA, clen);
     mcap__u16(w, id);
     mcap__str(w, name);
-    mcap__str(w, "ros2idl");
+    mcap__str(w, "ros2msg");
     mcap__u32(w, idl_len);
     mcap__raw(w, idl_data, idl_len);
     return id;
@@ -91,7 +91,7 @@ static inline u16 mcap_channel(mcap_writer *w, u16 schema_id, const char *topic)
 }
 
 // Write one message. cstruct points to an ilon-generated unpacked struct; struct_size = sizeof(struct).
-// A 4-byte CDR LE header is prepended automatically.
+// A 4-byte CDR LE header (XCDR1) is prepended automatically.
 static inline void mcap_message(mcap_writer *w, u16 channel_id, u64 log_time_ns,
                                  const void *cstruct, u32 struct_size) {
     static const u8 cdr_hdr[4] = {0x00, 0x01, 0x00, 0x00};

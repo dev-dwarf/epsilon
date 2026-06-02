@@ -162,25 +162,23 @@ def decode_status_variant(data, baz_count=4):
     return {'baz': baz, 'foo': foo, 'bar': bar, '_rem': r.remaining()}
 
 def decode_example_status(data):
-    """Decode Example_Status: Baz[8] + f32 foo + u8 bar + u8 bat[8] + u8 _pad[3]."""
+    """Decode Example_Status: Baz[8] + f32 foo + u32 bar + u32 bat[8] (XCDR1, enums=32-bit)."""
     r = CdrReader(data)
     baz = []
     for _ in range(8):
         bam = r.f32(); bop = r.u8(); r.u8(); r.u8(); r.u8()  # _pad[3]
         baz.append({'bam': round(bam,3), 'bop': bop})
     foo = r.f32()
-    bar = r.u8()
-    bat = [r.u8() for _ in range(8)]
-    pad = [r.u8() for _ in range(3)]
-    return {'baz': baz, 'foo': round(foo,3), 'bar': bar, 'bat': bat,
-            '_pad': pad, '_rem': r.remaining()}
+    bar = r.u32()
+    bat = [r.u32() for _ in range(8)]
+    return {'baz': baz, 'foo': round(foo,3), 'bar': bar, 'bat': bat, '_rem': r.remaining()}
 
 def decode_example_telemetry(data):
-    """Decode Example_Telemetry: Vec3{f32×3} + u32 timestamp + u8 modes[4]."""
+    """Decode Example_Telemetry: Vec3{f32×3} + u32 timestamp + u32 modes[4] (XCDR1, enums=32-bit)."""
     r = CdrReader(data)
     pos = {'x': round(r.f32(),3), 'y': round(r.f32(),3), 'z': round(r.f32(),3)}
     timestamp = r.u32()
-    modes = [r.u8() for _ in range(4)]
+    modes = [r.u32() for _ in range(4)]
     return {'pos': pos, 'timestamp': timestamp, 'modes': modes, '_rem': r.remaining()}
 
 # ---------------------------------------------------------------------------
@@ -251,10 +249,6 @@ print("SECTION 1: IDL schema analysis — does cross-section resolution matter?"
 print("=" * 60)
 
 for path, root in [
-    ('test_flat.mcap',      'Flat'),
-    ('test_singlesec.mcap', 'StatusSS'),
-    ('test_multisec.mcap',  'StatusMS'),
-    ('test_fwddecl.mcap',   'StatusFD'),
     ('example.mcap',        'Status'),
     ('example.mcap',        'Telemetry'),
 ]:
@@ -293,25 +287,3 @@ for schema, channel, data in read_mcap('example.mcap'):
             print(f"    *** {d['_rem']} bytes left after decode — CDR layout mismatch!")
         ti += 1
 
-print()
-print("=" * 60)
-print("SECTION 3: Decode Python test files — verify encoder is correct")
-print("=" * 60)
-
-for path, decoder, baz_n in [
-    ('test_flat.mcap',      decode_flat,           0),
-    ('test_singlesec.mcap', decode_status_variant, 4),
-    ('test_multisec.mcap',  decode_status_variant, 4),
-    ('test_fwddecl.mcap',   decode_status_variant, 4),
-]:
-    print(f"\n  {path}:")
-    for i, (_, _, data) in enumerate(read_mcap(path)):
-        if i >= 3: break
-        if baz_n == 0:
-            d = decoder(data)
-        else:
-            d = decoder(data, baz_n)
-        ok = d['_rem'] == 0
-        print(f"    msg {i}: payload={len(data)-4}B rem={d['_rem']} {'OK' if ok else 'MISMATCH'}")
-        if not ok:
-            print(f"      remaining bytes: {data[len(data)-d['_rem']:].hex()}")
